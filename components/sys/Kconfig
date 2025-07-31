@@ -1858,6 +1858,10 @@ menu "Lua RTOS"
                bool "Include robotito omnidirectional control, H-bridge"
                default y
 
+            config LUA_RTOS_LUA_USE_HUSKYLENS
+               bool "HUSKYLENS test"
+               default y
+
             config LUA_RTOS_LUA_USE_DRV8833
                bool "Include DRV8833 driver"
                default y
