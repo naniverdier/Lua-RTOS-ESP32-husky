@@ -208,6 +208,57 @@ bool huskylens_request_arrows(huskylens_t *husky) {
     return process_return(husky);
 }
 
+// Request data by ID from HuskyLens
+bool huskylens_request_by_id(huskylens_t *husky, int16_t id) {
+    uint8_t *buffer = husky_lens_protocol_write_begin(COMMAND_REQUEST_BY_ID);
+    husky_lens_protocol_write_int16(id);
+    int length = husky_lens_protocol_write_end();
+    protocol_write(husky, buffer, length);
+    return process_return(husky);
+}
+
+// Request blocks by ID from HuskyLens
+bool huskylens_request_blocks_by_id(huskylens_t *husky, int16_t id) {
+    uint8_t *buffer = husky_lens_protocol_write_begin(COMMAND_REQUEST_BLOCKS_BY_ID);
+    husky_lens_protocol_write_int16(id);
+    int length = husky_lens_protocol_write_end();
+    protocol_write(husky, buffer, length);
+    return process_return(husky);
+}
+
+// Request arrows by ID from HuskyLens
+bool huskylens_request_arrows_by_id(huskylens_t *husky, int16_t id) {
+    uint8_t *buffer = husky_lens_protocol_write_begin(COMMAND_REQUEST_ARROWS_BY_ID);
+    husky_lens_protocol_write_int16(id);
+    int length = husky_lens_protocol_write_end();
+    protocol_write(husky, buffer, length);
+    return process_return(husky);
+}
+
+// Request learned data from HuskyLens
+bool huskylens_request_learned(huskylens_t *husky) {
+    uint8_t *buffer = husky_lens_protocol_write_begin(COMMAND_REQUEST_LEARNED);
+    int length = husky_lens_protocol_write_end();
+    protocol_write(husky, buffer, length);
+    return process_return(husky);
+}
+
+// Request learned blocks from HuskyLens
+bool huskylens_request_blocks_learned(huskylens_t *husky) {
+    uint8_t *buffer = husky_lens_protocol_write_begin(COMMAND_REQUEST_BLOCKS_LEARNED);
+    int length = husky_lens_protocol_write_end();
+    protocol_write(husky, buffer, length);
+    return process_return(husky);
+}
+
+// Request learned arrows from HuskyLens
+bool huskylens_request_arrows_learned(huskylens_t *husky) {
+    uint8_t *buffer = husky_lens_protocol_write_begin(COMMAND_REQUEST_ARROWS_LEARNED);
+    int length = husky_lens_protocol_write_end();
+    protocol_write(husky, buffer, length);
+    return process_return(husky);
+}
+
 // Get number of available results
 int16_t huskylens_available(huskylens_t *husky) {
     int16_t result = huskylens_count(husky);
@@ -228,6 +279,110 @@ huskylens_result_t huskylens_get(huskylens_t *husky, int16_t index) {
     return husky->resultDefault;
 }
 
+// Get result by ID and index
+huskylens_result_t huskylens_get_by_id(huskylens_t *husky, int16_t id, int16_t index) {
+    int16_t counter = 0;
+    for (int i = 0; i < husky->protocolSize; i++) {
+        if (husky->protocolPtr[i].fifth == id) {
+            if (index == counter++) {
+                return husky->protocolPtr[i];
+            }
+        }
+    }
+    return husky->resultDefault;
+}
+
+// Get block by index
+huskylens_result_t huskylens_get_block(huskylens_t *husky, int16_t index) {
+    int16_t counter = 0;
+    for (int i = 0; i < husky->protocolSize; i++) {
+        if (husky->protocolPtr[i].command == COMMAND_RETURN_BLOCK) {
+            if (index == counter++) {
+                return husky->protocolPtr[i];
+            }
+        }
+    }
+    return husky->resultDefault;
+}
+
+// Get block by ID and index
+huskylens_result_t huskylens_get_block_by_id(huskylens_t *husky, int16_t id, int16_t index) {
+    int16_t counter = 0;
+    for (int i = 0; i < husky->protocolSize; i++) {
+        if (husky->protocolPtr[i].command == COMMAND_RETURN_BLOCK && husky->protocolPtr[i].fifth == id) {
+            if (index == counter++) {
+                return husky->protocolPtr[i];
+            }
+        }
+    }
+    return husky->resultDefault;
+}
+
+// Get arrow by index
+huskylens_result_t huskylens_get_arrow(huskylens_t *husky, int16_t index) {
+    int16_t counter = 0;
+    for (int i = 0; i < husky->protocolSize; i++) {
+        if (husky->protocolPtr[i].command == COMMAND_RETURN_ARROW) {
+            if (index == counter++) {
+                return husky->protocolPtr[i];
+            }
+        }
+    }
+    return husky->resultDefault;
+}
+
+// Get arrow by ID and index
+huskylens_result_t huskylens_get_arrow_by_id(huskylens_t *husky, int16_t id, int16_t index) {
+    int16_t counter = 0;
+    for (int i = 0; i < husky->protocolSize; i++) {
+        if (husky->protocolPtr[i].command == COMMAND_RETURN_ARROW && husky->protocolPtr[i].fifth == id) {
+            if (index == counter++) {
+                return husky->protocolPtr[i];
+            }
+        }
+    }
+    return husky->resultDefault;
+}
+
+// Get learned object by index
+huskylens_result_t huskylens_get_learned(huskylens_t *husky, int16_t index) {
+    int16_t counter = 0;
+    for (int i = 0; i < husky->protocolSize; i++) {
+        if (husky->protocolPtr[i].fifth > 0) {
+            if (index == counter++) {
+                return husky->protocolPtr[i];
+            }
+        }
+    }
+    return husky->resultDefault;
+}
+
+// Get learned block by index
+huskylens_result_t huskylens_get_block_learned(huskylens_t *husky, int16_t index) {
+    int16_t counter = 0;
+    for (int i = 0; i < husky->protocolSize; i++) {
+        if (husky->protocolPtr[i].command == COMMAND_RETURN_BLOCK && husky->protocolPtr[i].fifth > 0) {
+            if (index == counter++) {
+                return husky->protocolPtr[i];
+            }
+        }
+    }
+    return husky->resultDefault;
+}
+
+// Get learned arrow by index
+huskylens_result_t huskylens_get_arrow_learned(huskylens_t *husky, int16_t index) {
+    int16_t counter = 0;
+    for (int i = 0; i < husky->protocolSize; i++) {
+        if (husky->protocolPtr[i].command == COMMAND_RETURN_ARROW && husky->protocolPtr[i].fifth > 0) {
+            if (index == counter++) {
+                return husky->protocolPtr[i];
+            }
+        }
+    }
+    return husky->resultDefault;
+}
+
 // Get frame number
 int16_t huskylens_frame_number(huskylens_t *husky) {
     return husky->frameNum;
@@ -241,6 +396,94 @@ int16_t huskylens_count_learned_ids(huskylens_t *husky) {
 // Get total count of results
 int16_t huskylens_count(huskylens_t *husky) {
     return husky->protocolSize;
+}
+
+// Get count of results by ID
+int16_t huskylens_count_by_id(huskylens_t *husky, int16_t id) {
+    int16_t counter = 0;
+    for (int i = 0; i < husky->protocolSize; i++) {
+        if (husky->protocolPtr[i].fifth == id) {
+            counter++;
+        }
+    }
+    return counter;
+}
+
+// Get count of blocks
+int16_t huskylens_count_blocks(huskylens_t *husky) {
+    int16_t counter = 0;
+    for (int i = 0; i < husky->protocolSize; i++) {
+        if (husky->protocolPtr[i].command == COMMAND_RETURN_BLOCK) {
+            counter++;
+        }
+    }
+    return counter;
+}
+
+// Get count of blocks by ID
+int16_t huskylens_count_blocks_by_id(huskylens_t *husky, int16_t id) {
+    int16_t counter = 0;
+    for (int i = 0; i < husky->protocolSize; i++) {
+        if (husky->protocolPtr[i].command == COMMAND_RETURN_BLOCK && husky->protocolPtr[i].fifth == id) {
+            counter++;
+        }
+    }
+    return counter;
+}
+
+// Get count of arrows
+int16_t huskylens_count_arrows(huskylens_t *husky) {
+    int16_t counter = 0;
+    for (int i = 0; i < husky->protocolSize; i++) {
+        if (husky->protocolPtr[i].command == COMMAND_RETURN_ARROW) {
+            counter++;
+        }
+    }
+    return counter;
+}
+
+// Get count of arrows by ID
+int16_t huskylens_count_arrows_by_id(huskylens_t *husky, int16_t id) {
+    int16_t counter = 0;
+    for (int i = 0; i < husky->protocolSize; i++) {
+        if (husky->protocolPtr[i].command == COMMAND_RETURN_ARROW && husky->protocolPtr[i].fifth == id) {
+            counter++;
+        }
+    }
+    return counter;
+}
+
+// Get count of learned objects
+int16_t huskylens_count_learned(huskylens_t *husky) {
+    int16_t counter = 0;
+    for (int i = 0; i < husky->protocolSize; i++) {
+        if (husky->protocolPtr[i].fifth > 0) {
+            counter++;
+        }
+    }
+    return counter;
+}
+
+// Get count of learned blocks
+int16_t huskylens_count_blocks_learned(huskylens_t *husky) {
+    int16_t counter = 0;
+    for (int i = 0; i < husky->protocolSize; i++) {
+        if (husky->protocolPtr[i].command == COMMAND_RETURN_BLOCK && husky->protocolPtr[i].fifth > 0) {
+            counter++;
+        }
+    }
+    return counter;
+}
+
+// Get count of learned arrows
+int16_t huskylens_count_arrows_learned(huskylens_t *husky) {
+    int16_t counter = 0;
+    for (int i = 0; i < husky->protocolSize; i++) {
+        if (husky->protocolPtr[i].command == COMMAND_RETURN_ARROW && husky->protocolPtr[i].fifth > 0) {
+            counter++;
+        }
+    }
+    return counter;
 }
 
 // Set algorithm type
@@ -264,6 +507,122 @@ bool huskylens_write_learn(huskylens_t *husky, int id) {
 // Forget all learned objects
 bool huskylens_write_forget(huskylens_t *husky) {
     uint8_t *buffer = husky_lens_protocol_write_begin(COMMAND_REQUEST_FORGET);
+    int length = husky_lens_protocol_write_end();
+    protocol_write(husky, buffer, length);
+    return wait_for_command(husky, COMMAND_RETURN_OK);
+}
+
+// Send sensor data to HuskyLens
+bool huskylens_write_sensor(huskylens_t *husky, int sensor0, int sensor1, int sensor2) {
+    uint8_t *buffer = husky_lens_protocol_write_begin(COMMAND_REQUEST_SENSOR);
+    husky_lens_protocol_write_int16(sensor0);
+    husky_lens_protocol_write_int16(sensor1);
+    husky_lens_protocol_write_int16(sensor2);
+    int length = husky_lens_protocol_write_end();
+    protocol_write(husky, buffer, length);
+    return wait_for_command(husky, COMMAND_RETURN_OK);
+}
+
+// Set custom name for an ID
+bool huskylens_set_custom_name(huskylens_t *husky, const char *name, uint8_t id) {
+    uint8_t *buffer = husky_lens_protocol_write_begin(COMMAND_REQUEST_CUSTOMNAMES);
+    husky_lens_protocol_write_uint8(id);
+    husky_lens_protocol_write_uint8(strlen(name));
+    for (int i = 0; i < strlen(name) && i < 20; i++) {
+        husky_lens_protocol_write_uint8(name[i]);
+    }
+    int length = husky_lens_protocol_write_end();
+    protocol_write(husky, buffer, length);
+    return wait_for_command(husky, COMMAND_RETURN_OK);
+}
+
+// Save picture to SD card
+bool huskylens_save_picture_to_sd(huskylens_t *husky) {
+    uint8_t *buffer = husky_lens_protocol_write_begin(COMMAND_REQUEST_PHOTO);
+    int length = husky_lens_protocol_write_end();
+    protocol_write(husky, buffer, length);
+    return wait_for_command(husky, COMMAND_RETURN_OK);
+}
+
+// Save model to SD card
+bool huskylens_save_model_to_sd(huskylens_t *husky, int fileNum) {
+    uint8_t *buffer = husky_lens_protocol_write_begin(COMMAND_REQUEST_SEND_KNOWLEDGES);
+    husky_lens_protocol_write_int16(fileNum);
+    int length = husky_lens_protocol_write_end();
+    protocol_write(husky, buffer, length);
+    return wait_for_command(husky, COMMAND_RETURN_OK);
+}
+
+// Load model from SD card
+bool huskylens_load_model_from_sd(huskylens_t *husky, int fileNum) {
+    uint8_t *buffer = husky_lens_protocol_write_begin(COMMAND_REQUEST_RECEIVE_KNOWLEDGES);
+    husky_lens_protocol_write_int16(fileNum);
+    int length = husky_lens_protocol_write_end();
+    protocol_write(husky, buffer, length);
+    return wait_for_command(husky, COMMAND_RETURN_OK);
+}
+
+// Clear custom text
+bool huskylens_clear_custom_text(huskylens_t *husky) {
+    uint8_t *buffer = husky_lens_protocol_write_begin(COMMAND_REQUEST_CLEAR_TEXT);
+    int length = husky_lens_protocol_write_end();
+    protocol_write(husky, buffer, length);
+    return wait_for_command(husky, COMMAND_RETURN_OK);
+}
+
+// Display custom text
+bool huskylens_custom_text(huskylens_t *husky, const char *text, uint16_t x, uint8_t y) {
+    uint8_t *buffer = husky_lens_protocol_write_begin(COMMAND_REQUEST_CUSTOM_TEXT);
+    husky_lens_protocol_write_uint8(strlen(text));
+    if (x >= 255) {
+        husky_lens_protocol_write_uint8(0xFF);
+    } else {
+        husky_lens_protocol_write_uint8(0x00);
+    }
+    husky_lens_protocol_write_uint8(x & 0xFF);
+    husky_lens_protocol_write_uint8(y);
+    for (int i = 0; i < strlen(text) && i < 20; i++) {
+        husky_lens_protocol_write_uint8(text[i]);
+    }
+    int length = husky_lens_protocol_write_end();
+    protocol_write(husky, buffer, length);
+    return wait_for_command(husky, COMMAND_RETURN_OK);
+}
+
+// Save screenshot to SD card
+bool huskylens_save_screenshot_to_sd(huskylens_t *husky) {
+    uint8_t *buffer = husky_lens_protocol_write_begin(COMMAND_REQUEST_SAVE_SCREENSHOT);
+    int length = husky_lens_protocol_write_end();
+    protocol_write(husky, buffer, length);
+    return wait_for_command(husky, COMMAND_RETURN_OK);
+}
+
+// Check if HuskyLens is Pro version
+bool huskylens_is_pro(huskylens_t *husky) {
+    uint8_t *buffer = husky_lens_protocol_write_begin(COMMAND_REQUEST_IS_PRO);
+    int length = husky_lens_protocol_write_end();
+    protocol_write(husky, buffer, length);
+    
+    if (wait_for_command(husky, COMMAND_RETURN_INFO)) {
+        // Read the response
+        husky->protocolSize = husky_lens_protocol_read_int16();
+        husky_lens_protocol_read_end();
+        return (husky->protocolSize > 0);
+    }
+    return false;
+}
+
+// Check firmware version
+bool huskylens_check_firmware_version(huskylens_t *husky) {
+    return huskylens_write_firmware_version(husky, "0.4.1");
+}
+
+// Write firmware version
+bool huskylens_write_firmware_version(huskylens_t *husky, const char *version) {
+    uint8_t *buffer = husky_lens_protocol_write_begin(COMMAND_REQUEST_FIRMWARE_VERSION);
+    for (int i = 0; i < strlen(version); i++) {
+        husky_lens_protocol_write_uint8(version[i]);
+    }
     int length = husky_lens_protocol_write_end();
     protocol_write(husky, buffer, length);
     return wait_for_command(husky, COMMAND_RETURN_OK);

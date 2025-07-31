@@ -56,6 +56,18 @@ extern "C" {
 #define COMMAND_REQUEST_LEARN    0x2F
 #define COMMAND_REQUEST_FORGET   0x30
 
+// Additional commands
+#define COMMAND_REQUEST_CUSTOMNAMES 0x31
+#define COMMAND_REQUEST_PHOTO       0x32
+#define COMMAND_REQUEST_SEND_KNOWLEDGES 0x33
+#define COMMAND_REQUEST_RECEIVE_KNOWLEDGES 0x34
+#define COMMAND_REQUEST_CUSTOM_TEXT 0x35
+#define COMMAND_REQUEST_CLEAR_TEXT  0x36
+#define COMMAND_REQUEST_SAVE_SCREENSHOT 0x37
+#define COMMAND_REQUEST_IS_PRO      0x38
+#define COMMAND_REQUEST_SENSOR      0x39
+#define COMMAND_REQUEST_FIRMWARE_VERSION 0X3C
+
 // Algorithm types
 #define ALGORITHM_FACE_RECOGNITION    0
 #define ALGORITHM_OBJECT_TRACKING     1
@@ -113,6 +125,14 @@ void huskylens_set_timeout(huskylens_t *husky, unsigned long duration);
 bool huskylens_request(huskylens_t *husky);
 
 /**
+ * @brief Request data by ID from HuskyLens
+ * @param husky Pointer to huskylens_t structure
+ * @param id ID to request
+ * @return true if successful, false otherwise
+ */
+bool huskylens_request_by_id(huskylens_t *husky, int16_t id);
+
+/**
  * @brief Request blocks data from HuskyLens
  * @param husky Pointer to huskylens_t structure
  * @return true if successful, false otherwise
@@ -120,11 +140,48 @@ bool huskylens_request(huskylens_t *husky);
 bool huskylens_request_blocks(huskylens_t *husky);
 
 /**
+ * @brief Request blocks by ID from HuskyLens
+ * @param husky Pointer to huskylens_t structure
+ * @param id ID to request
+ * @return true if successful, false otherwise
+ */
+bool huskylens_request_blocks_by_id(huskylens_t *husky, int16_t id);
+
+/**
  * @brief Request arrows data from HuskyLens
  * @param husky Pointer to huskylens_t structure
  * @return true if successful, false otherwise
  */
 bool huskylens_request_arrows(huskylens_t *husky);
+
+/**
+ * @brief Request arrows by ID from HuskyLens
+ * @param husky Pointer to huskylens_t structure
+ * @param id ID to request
+ * @return true if successful, false otherwise
+ */
+bool huskylens_request_arrows_by_id(huskylens_t *husky, int16_t id);
+
+/**
+ * @brief Request learned data from HuskyLens
+ * @param husky Pointer to huskylens_t structure
+ * @return true if successful, false otherwise
+ */
+bool huskylens_request_learned(huskylens_t *husky);
+
+/**
+ * @brief Request learned blocks from HuskyLens
+ * @param husky Pointer to huskylens_t structure
+ * @return true if successful, false otherwise
+ */
+bool huskylens_request_blocks_learned(huskylens_t *husky);
+
+/**
+ * @brief Request learned arrows from HuskyLens
+ * @param husky Pointer to huskylens_t structure
+ * @return true if successful, false otherwise
+ */
+bool huskylens_request_arrows_learned(huskylens_t *husky);
 
 /**
  * @brief Get number of available results
@@ -149,6 +206,73 @@ huskylens_result_t huskylens_read(huskylens_t *husky);
 huskylens_result_t huskylens_get(huskylens_t *husky, int16_t index);
 
 /**
+ * @brief Get result by ID and index
+ * @param husky Pointer to huskylens_t structure
+ * @param id ID to get
+ * @param index Index of result to get
+ * @return Result structure
+ */
+huskylens_result_t huskylens_get_by_id(huskylens_t *husky, int16_t id, int16_t index);
+
+/**
+ * @brief Get block by index
+ * @param husky Pointer to huskylens_t structure
+ * @param index Index of block to get
+ * @return Result structure
+ */
+huskylens_result_t huskylens_get_block(huskylens_t *husky, int16_t index);
+
+/**
+ * @brief Get block by ID and index
+ * @param husky Pointer to huskylens_t structure
+ * @param id ID to get
+ * @param index Index of block to get
+ * @return Result structure
+ */
+huskylens_result_t huskylens_get_block_by_id(huskylens_t *husky, int16_t id, int16_t index);
+
+/**
+ * @brief Get arrow by index
+ * @param husky Pointer to huskylens_t structure
+ * @param index Index of arrow to get
+ * @return Result structure
+ */
+huskylens_result_t huskylens_get_arrow(huskylens_t *husky, int16_t index);
+
+/**
+ * @brief Get arrow by ID and index
+ * @param husky Pointer to huskylens_t structure
+ * @param id ID to get
+ * @param index Index of arrow to get
+ * @return Result structure
+ */
+huskylens_result_t huskylens_get_arrow_by_id(huskylens_t *husky, int16_t id, int16_t index);
+
+/**
+ * @brief Get learned object by index
+ * @param husky Pointer to huskylens_t structure
+ * @param index Index of learned object to get
+ * @return Result structure
+ */
+huskylens_result_t huskylens_get_learned(huskylens_t *husky, int16_t index);
+
+/**
+ * @brief Get learned block by index
+ * @param husky Pointer to huskylens_t structure
+ * @param index Index of learned block to get
+ * @return Result structure
+ */
+huskylens_result_t huskylens_get_block_learned(huskylens_t *husky, int16_t index);
+
+/**
+ * @brief Get learned arrow by index
+ * @param husky Pointer to huskylens_t structure
+ * @param index Index of learned arrow to get
+ * @return Result structure
+ */
+huskylens_result_t huskylens_get_arrow_learned(huskylens_t *husky, int16_t index);
+
+/**
  * @brief Get frame number
  * @param husky Pointer to huskylens_t structure
  * @return Frame number
@@ -168,6 +292,65 @@ int16_t huskylens_count_learned_ids(huskylens_t *husky);
  * @return Total count of results
  */
 int16_t huskylens_count(huskylens_t *husky);
+
+/**
+ * @brief Get count of results by ID
+ * @param husky Pointer to huskylens_t structure
+ * @param id ID to count
+ * @return Count of results for the given ID
+ */
+int16_t huskylens_count_by_id(huskylens_t *husky, int16_t id);
+
+/**
+ * @brief Get count of blocks
+ * @param husky Pointer to huskylens_t structure
+ * @return Count of blocks
+ */
+int16_t huskylens_count_blocks(huskylens_t *husky);
+
+/**
+ * @brief Get count of blocks by ID
+ * @param husky Pointer to huskylens_t structure
+ * @param id ID to count
+ * @return Count of blocks for the given ID
+ */
+int16_t huskylens_count_blocks_by_id(huskylens_t *husky, int16_t id);
+
+/**
+ * @brief Get count of arrows
+ * @param husky Pointer to huskylens_t structure
+ * @return Count of arrows
+ */
+int16_t huskylens_count_arrows(huskylens_t *husky);
+
+/**
+ * @brief Get count of arrows by ID
+ * @param husky Pointer to huskylens_t structure
+ * @param id ID to count
+ * @return Count of arrows for the given ID
+ */
+int16_t huskylens_count_arrows_by_id(huskylens_t *husky, int16_t id);
+
+/**
+ * @brief Get count of learned objects
+ * @param husky Pointer to huskylens_t structure
+ * @return Count of learned objects
+ */
+int16_t huskylens_count_learned(huskylens_t *husky);
+
+/**
+ * @brief Get count of learned blocks
+ * @param husky Pointer to huskylens_t structure
+ * @return Count of learned blocks
+ */
+int16_t huskylens_count_blocks_learned(huskylens_t *husky);
+
+/**
+ * @brief Get count of learned arrows
+ * @param husky Pointer to huskylens_t structure
+ * @return Count of learned arrows
+ */
+int16_t huskylens_count_arrows_learned(huskylens_t *husky);
 
 /**
  * @brief Set algorithm type
@@ -198,6 +381,94 @@ bool huskylens_write_forget(huskylens_t *husky);
  * @return true if there are learned objects, false otherwise
  */
 bool huskylens_is_learned(huskylens_t *husky);
+
+/**
+ * @brief Send sensor data to HuskyLens
+ * @param husky Pointer to huskylens_t structure
+ * @param sensor0 First sensor value
+ * @param sensor1 Second sensor value
+ * @param sensor2 Third sensor value
+ * @return true if successful, false otherwise
+ */
+bool huskylens_write_sensor(huskylens_t *husky, int sensor0, int sensor1, int sensor2);
+
+/**
+ * @brief Set custom name for an ID
+ * @param husky Pointer to huskylens_t structure
+ * @param name Custom name string
+ * @param id ID to set name for
+ * @return true if successful, false otherwise
+ */
+bool huskylens_set_custom_name(huskylens_t *husky, const char *name, uint8_t id);
+
+/**
+ * @brief Save picture to SD card
+ * @param husky Pointer to huskylens_t structure
+ * @return true if successful, false otherwise
+ */
+bool huskylens_save_picture_to_sd(huskylens_t *husky);
+
+/**
+ * @brief Save model to SD card
+ * @param husky Pointer to huskylens_t structure
+ * @param fileNum File number to save to
+ * @return true if successful, false otherwise
+ */
+bool huskylens_save_model_to_sd(huskylens_t *husky, int fileNum);
+
+/**
+ * @brief Load model from SD card
+ * @param husky Pointer to huskylens_t structure
+ * @param fileNum File number to load from
+ * @return true if successful, false otherwise
+ */
+bool huskylens_load_model_from_sd(huskylens_t *husky, int fileNum);
+
+/**
+ * @brief Clear custom text
+ * @param husky Pointer to huskylens_t structure
+ * @return true if successful, false otherwise
+ */
+bool huskylens_clear_custom_text(huskylens_t *husky);
+
+/**
+ * @brief Display custom text
+ * @param husky Pointer to huskylens_t structure
+ * @param text Text to display
+ * @param x X coordinate
+ * @param y Y coordinate
+ * @return true if successful, false otherwise
+ */
+bool huskylens_custom_text(huskylens_t *husky, const char *text, uint16_t x, uint8_t y);
+
+/**
+ * @brief Save screenshot to SD card
+ * @param husky Pointer to huskylens_t structure
+ * @return true if successful, false otherwise
+ */
+bool huskylens_save_screenshot_to_sd(huskylens_t *husky);
+
+/**
+ * @brief Check if HuskyLens is Pro version
+ * @param husky Pointer to huskylens_t structure
+ * @return true if Pro version, false otherwise
+ */
+bool huskylens_is_pro(huskylens_t *husky);
+
+/**
+ * @brief Check firmware version
+ * @param husky Pointer to huskylens_t structure
+ * @return true if successful, false otherwise
+ */
+bool huskylens_check_firmware_version(huskylens_t *husky);
+
+/**
+ * @brief Write firmware version
+ * @param husky Pointer to huskylens_t structure
+ * @param version Version string
+ * @return true if successful, false otherwise
+ */
+bool huskylens_write_firmware_version(huskylens_t *husky, const char *version);
 
 /**
  * @brief Run a complete test of HuskyLens functionality
