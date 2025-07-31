@@ -193,6 +193,13 @@ bool huskylens_write_learn(huskylens_t *husky, int id);
 bool huskylens_write_forget(huskylens_t *husky);
 
 /**
+ * @brief Check if there are learned objects
+ * @param husky Pointer to huskylens_t structure
+ * @return true if there are learned objects, false otherwise
+ */
+bool huskylens_is_learned(huskylens_t *husky);
+
+/**
  * @brief Run a complete test of HuskyLens functionality
  * This function initializes the device, sets up object tracking,
  * requests data once, and displays the results

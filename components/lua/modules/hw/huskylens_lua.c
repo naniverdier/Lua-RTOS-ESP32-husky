@@ -196,6 +196,30 @@ static int l_huskylens_forget(lua_State *L) {
     return 1;
 }
 
+static int l_huskylens_is_learned(lua_State *L) {
+    if (!initialized) {
+        lua_pushnil(L);
+        lua_pushstring(L, "not initialized");
+        return 2;
+    }
+    
+    bool learned = huskylens_is_learned(&husky_instance);
+    lua_pushboolean(L, learned);
+    return 1;
+}
+
+static int l_huskylens_available(lua_State *L) {
+    if (!initialized) {
+        lua_pushnil(L);
+        lua_pushstring(L, "not initialized");
+        return 2;
+    }
+    
+    int16_t available = huskylens_available(&husky_instance);
+    lua_pushinteger(L, available);
+    return 1;
+}
+
 static const luaL_Reg huskylens[] = {
     {"init", l_huskylens_init},
     {"test", l_huskylens_test},
@@ -204,6 +228,8 @@ static const luaL_Reg huskylens[] = {
     {"set_algorithm", l_huskylens_set_algorithm},
     {"learn", l_huskylens_learn},
     {"forget", l_huskylens_forget},
+    {"is_learned", l_huskylens_is_learned},
+    {"available", l_huskylens_available},
     {NULL, NULL}
 };
 

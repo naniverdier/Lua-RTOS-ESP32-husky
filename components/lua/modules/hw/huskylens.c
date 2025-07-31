@@ -12,6 +12,7 @@
 
 #include "huskylens.h"
 
+// Helper macro for max function
 #define max(a,b) ((a) > (b) ? (a) : (b))
 
 // Helper function to get current time in milliseconds
@@ -266,6 +267,11 @@ bool huskylens_write_forget(huskylens_t *husky) {
     int length = husky_lens_protocol_write_end();
     protocol_write(husky, buffer, length);
     return wait_for_command(husky, COMMAND_RETURN_OK);
+}
+
+// Check if there are learned objects
+bool huskylens_is_learned(huskylens_t *husky) {
+    return (husky->knowledgeSize > 0);
 }
 
 // Test function implementation
