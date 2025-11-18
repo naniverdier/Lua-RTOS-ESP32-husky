@@ -1525,7 +1525,7 @@ menu "Lua RTOS"
 
 		        config APDS9960_SPEED
 		           int "APDS9960 I2C port speed"
-		           range 100000 3400000
+		           range 30000 3400000
 		           default 400000
 		           help
 		             I2C port speed in hertz
@@ -1550,7 +1550,14 @@ menu "Lua RTOS"
 		    	help
 		    		Size of the buffer where data is accumulated
 		    endmenu
-
+		    menu "HUSKYLENS"
+		        config HUSKYLENS_SPEED
+		           int "HUSKYLENS I2C port speed"
+		           range 30000 3400000
+		           default 100000
+		           help
+		             I2C port speed in hertz
+		    endmenu
         endmenu
 
          
