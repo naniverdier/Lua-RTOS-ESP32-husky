@@ -132,7 +132,7 @@ uint8_t* husky_lens_protocol_write_begin(uint8_t command){
     send_buffer[ADDRESS_INDEX] = 0x11;
     send_buffer[COMMAND_INDEX] = command;
     send_index = CONTENT_INDEX;
-    return &send_buffer;
+    return (uint8_t *)send_buffer;
 }
 
 void husky_lens_protocol_write_uint8(uint8_t content){

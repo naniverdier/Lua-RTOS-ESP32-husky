@@ -8,28 +8,82 @@
  *
  * This library interfaces the HuskyLens AI Camera to ESP32 over I2C.
  * Adapted from Arduino library to work with ESP32 FreeRTOS environment.
+ * I2C access uses raw write/read (no register byte) to match Arduino Wire behavior.
  */
 
- #include "huskylens.h"
+#include "huskylens.h"
+#include "drivers/i2c.h"
 
- // Helper macro for max function
- #define max(a,b) ((a) > (b) ? (a) : (b))
- 
- // Helper function to get current time in milliseconds
- static unsigned long get_millis() {
-     return (unsigned long)(esp_timer_get_time() / 1000);
- }
- 
- // Helper function to write protocol data
- static void protocol_write(huskylens_t *husky, uint8_t *buffer, int length) {
-     i2c_util_writeMulti(husky->i2cdevice, husky->address, 0, buffer, length);
- }
- 
- // Helper function to read protocol data
- static bool protocol_read(huskylens_t *husky, uint8_t *buffer, int length) {
-     int result = i2c_util_readMulti(husky->i2cdevice, husky->address, 0, buffer, length);
-     return (result >= 0);
- }
+// Helper macro for max function
+#define max(a,b) ((a) > (b) ? (a) : (b))
+
+#define HUSKYLENS_I2C_READ_CHUNK  16
+#define HUSKYLENS_LEFTOVER_MAX    (HUSKYLENS_I2C_READ_CHUNK - 1)
+
+// Bytes left in the last chunk after a complete frame; fed at start of next protocol_available
+static uint8_t s_leftover[HUSKYLENS_LEFTOVER_MAX];
+static int s_leftover_len;
+
+// HuskyLens uses frame-based protocol; no I2C register. Raw write: address + payload only.
+static bool huskylens_i2c_write_raw(int deviceid, uint8_t address, const uint8_t *data, int len) {
+    driver_error_t *error;
+    int transaction = I2C_TRANSACTION_INITIALIZER;
+    if ((error = i2c_start(deviceid, &transaction))) {
+        free(error);
+        return false;
+    }
+    if ((error = i2c_write_address(deviceid, &transaction, (char)address, 0))) {
+        free(error);
+        return false;
+    }
+    if ((error = i2c_write(deviceid, &transaction, (char *)data, len))) {
+        free(error);
+        return false;
+    }
+    if ((error = i2c_stop(deviceid, &transaction))) {
+        free(error);
+        return false;
+    }
+    return true;
+}
+
+// Raw read: address + read only (no register byte before read), like Arduino requestFrom().
+static bool huskylens_i2c_read_raw(int deviceid, uint8_t address, uint8_t *buffer, int len) {
+    driver_error_t *error;
+    int transaction = I2C_TRANSACTION_INITIALIZER;
+    if ((error = i2c_start(deviceid, &transaction))) {
+        free(error);
+        return false;
+    }
+    if ((error = i2c_write_address(deviceid, &transaction, (char)address, 1))) {
+        free(error);
+        return false;
+    }
+    if ((error = i2c_read(deviceid, &transaction, (char *)buffer, len))) {
+        free(error);
+        return false;
+    }
+    if ((error = i2c_stop(deviceid, &transaction))) {
+        free(error);
+        return false;
+    }
+    return true;
+}
+
+// Helper function to get current time in milliseconds
+static unsigned long get_millis() {
+    return (unsigned long)(esp_timer_get_time() / 1000);
+}
+
+// Write protocol frame (no register byte)
+static void protocol_write(huskylens_t *husky, uint8_t *buffer, int length) {
+    (void)huskylens_i2c_write_raw(husky->i2cdevice, husky->address, buffer, length);
+}
+
+// Read up to length bytes into buffer (no register byte). Returns true if read succeeded.
+static bool protocol_read(huskylens_t *husky, uint8_t *buffer, int length) {
+    return huskylens_i2c_read_raw(husky->i2cdevice, husky->address, buffer, length);
+}
  
  // Helper function to start timeout timer
  static void timer_begin(huskylens_t *husky) {
@@ -41,12 +95,36 @@
      return (get_millis() - husky->timeOutTimer > husky->timeOutDuration);
  }
  
- // Helper function to check if protocol data is available
+ // Like Arduino: request 16 bytes, drain into parser. When a frame completes we return
+ // true and stash any remaining bytes in the chunk for the next call (receive_buffer
+ // must not be overwritten before the caller uses it).
  static bool protocol_available(huskylens_t *husky) {
-     uint8_t buffer[16];
-     if (protocol_read(husky, buffer, 16)) {
-         for (int i = 0; i < 16; i++) {
+     uint8_t buffer[HUSKYLENS_I2C_READ_CHUNK];
+     int j;
+     /* Feed any leftover bytes from the previous chunk */
+     for (j = 0; j < s_leftover_len; j++) {
+         if (husky_lens_protocol_receive(s_leftover[j])) {
+             j++;
+             if (j < s_leftover_len) {
+                 memmove(s_leftover, &s_leftover[j], (size_t)(s_leftover_len - j));
+                 s_leftover_len -= j;
+             } else {
+                 s_leftover_len = 0;
+             }
+             return true;
+         }
+     }
+     s_leftover_len = 0;
+     /* Read and process chunks */
+     while (protocol_read(husky, buffer, HUSKYLENS_I2C_READ_CHUNK)) {
+         for (int i = 0; i < HUSKYLENS_I2C_READ_CHUNK; i++) {
              if (husky_lens_protocol_receive(buffer[i])) {
+                 i++;
+                 if (i < HUSKYLENS_I2C_READ_CHUNK) {
+                     int tail = HUSKYLENS_I2C_READ_CHUNK - i;
+                     memcpy(s_leftover, &buffer[i], (size_t)tail);
+                     s_leftover_len = tail;
+                 }
                  return true;
              }
          }
@@ -80,11 +158,15 @@
          return false;
      }
      
-     // Read return info
+     // Read return info (5 x int16 like Arduino protocolReadReturnInfo / FiveInt16)
      husky->protocolSize = husky_lens_protocol_read_int16();
      husky->frameNum = husky_lens_protocol_read_int16();
      husky->knowledgeSize = husky_lens_protocol_read_int16();
-     husky_lens_protocol_read_end();
+     (void)husky_lens_protocol_read_int16(); /* fourth */
+     (void)husky_lens_protocol_read_int16(); /* fifth */
+     if (!husky_lens_protocol_read_end()) {
+         return false;
+     }
      
      // Allocate memory for results
      if (husky->protocolPtr) {
@@ -109,7 +191,9 @@
              husky->protocolPtr[i].third = husky_lens_protocol_read_int16();
              husky->protocolPtr[i].fourth = husky_lens_protocol_read_int16();
              husky->protocolPtr[i].fifth = husky_lens_protocol_read_int16();
-             husky_lens_protocol_read_end();
+             if (!husky_lens_protocol_read_end()) {
+                 return false;
+             }
          } else if (husky_lens_protocol_read_begin(COMMAND_RETURN_ARROW)) {
              husky->protocolPtr[i].command = COMMAND_RETURN_ARROW;
              husky->protocolPtr[i].first = husky_lens_protocol_read_int16();
@@ -117,7 +201,9 @@
              husky->protocolPtr[i].third = husky_lens_protocol_read_int16();
              husky->protocolPtr[i].fourth = husky_lens_protocol_read_int16();
              husky->protocolPtr[i].fifth = husky_lens_protocol_read_int16();
-             husky_lens_protocol_read_end();
+             if (!husky_lens_protocol_read_end()) {
+                 return false;
+             }
          } else {
              return false;
          }
@@ -622,10 +708,12 @@
      protocol_write(husky, buffer, length);
      
      if (wait_for_command(husky, COMMAND_RETURN_INFO)) {
-         // Read the response
-         husky->protocolSize = husky_lens_protocol_read_int16();
-         husky_lens_protocol_read_end();
-         return (husky->protocolSize > 0);
+         /* Arduino: protocolReadOneInt16 -> one int16 then read_end */
+         int16_t first = husky_lens_protocol_read_int16();
+         if (!husky_lens_protocol_read_end()) {
+             return false;
+         }
+         return (first != 0);
      }
      return false;
  }
@@ -635,12 +723,12 @@
      return huskylens_write_firmware_version(husky, "0.4.1");
  }
  
- // Write firmware version
+ // Write firmware version (Arduino: length byte then version string, no null)
  bool huskylens_write_firmware_version(huskylens_t *husky, const char *version) {
+     size_t len = strlen(version);
      uint8_t *buffer = husky_lens_protocol_write_begin(COMMAND_REQUEST_FIRMWARE_VERSION);
-     for (int i = 0; i < strlen(version); i++) {
-         husky_lens_protocol_write_uint8(version[i]);
-     }
+     husky_lens_protocol_write_uint8((uint8_t)len);
+     husky_lens_protocol_write_buffer_uint8((uint8_t *)version, (uint32_t)len);
      int length = husky_lens_protocol_write_end();
      protocol_write(husky, buffer, length);
      return wait_for_command(husky, COMMAND_RETURN_OK);
