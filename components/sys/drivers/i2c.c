@@ -397,6 +397,7 @@ driver_error_t *i2c_attach(int unit, int mode, int speed, int addr10_en,
 
         i2c[unit].mode = mode;
         i2c[unit].setup = 1;
+        i2c[unit].speed = speed;
 
         syslog(LOG_INFO, "i2c%u at pins scl=%s%d/sdc=%s%d", unit,
                 gpio_portname(i2c[unit].scl), gpio_name(i2c[unit].scl),
