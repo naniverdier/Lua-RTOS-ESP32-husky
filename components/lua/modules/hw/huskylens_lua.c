@@ -22,9 +22,20 @@ extern "C"{
 #endif
 
 #include "huskylens.h"
+#include "huskylens_mapper.h"
+#include "sys.h"
 
 static bool initialized = false;
 static huskylens_t husky_instance;
+static lua_callback_t *s_mapper_conn_cb = NULL;
+
+static void mapper_conn_cb(bool connected) {
+    if (!s_mapper_conn_cb) {
+        return;
+    }
+    lua_pushboolean(luaS_callback_state(s_mapper_conn_cb), connected);
+    luaS_callback_call(s_mapper_conn_cb, 1);
+}
 
 static int l_huskylens_init(lua_State *L) {
     if (!initialized) {
@@ -1076,6 +1087,202 @@ static int l_huskylens_write_firmware_version(lua_State *L) {
     return 1;
 }
 
+static int l_huskylens_mapper_start(lua_State *L) {
+    if (!initialized) {
+        lua_pushnil(L);
+        lua_pushstring(L, "not initialized");
+        return 2;
+    }
+
+    bool ok = huskylens_mapper_start(&husky_instance);
+    if (!ok) {
+        lua_pushnil(L);
+        lua_pushstring(L, "mapper start failed");
+        return 2;
+    }
+
+    lua_pushboolean(L, true);
+    return 1;
+}
+
+static int l_huskylens_mapper_stop(lua_State *L) {
+    (void)L;
+    huskylens_mapper_stop();
+    lua_pushboolean(L, true);
+    return 1;
+}
+
+static int l_huskylens_mapper_get(lua_State *L) {
+    uint8_t pairs[HUSKYLENS_MAP_MAX * 2];
+    uint8_t count = huskylens_mapper_get_pairs(pairs, HUSKYLENS_MAP_MAX);
+
+    lua_newtable(L);
+    for (uint8_t i = 0; i < count; i++) {
+        lua_pushinteger(L, i + 1);
+        lua_newtable(L);
+
+        lua_pushstring(L, "physical");
+        lua_pushinteger(L, pairs[i * 2]);
+        lua_settable(L, -3);
+
+        lua_pushstring(L, "logical");
+        lua_pushinteger(L, pairs[i * 2 + 1]);
+        lua_settable(L, -3);
+
+        lua_settable(L, -3);
+    }
+
+    return 1;
+}
+
+static int l_huskylens_mapper_set(lua_State *L) {
+    if (!initialized) {
+        lua_pushnil(L);
+        lua_pushstring(L, "not initialized");
+        return 2;
+    }
+
+    luaL_checktype(L, 1, LUA_TTABLE);
+    size_t len = lua_rawlen(L, 1);
+    if (len > HUSKYLENS_MAP_MAX) {
+        lua_pushnil(L);
+        lua_pushstring(L, "too many mappings");
+        return 2;
+    }
+
+    uint8_t pairs[HUSKYLENS_MAP_MAX * 2];
+    uint8_t count = 0;
+
+    for (size_t i = 1; i <= len; i++) {
+        lua_rawgeti(L, 1, (lua_Integer)i);
+        if (!lua_istable(L, -1)) {
+            lua_pop(L, 1);
+            lua_pushnil(L);
+            lua_pushstring(L, "mapping entry must be a table");
+            return 2;
+        }
+
+        lua_getfield(L, -1, "physical");
+        if (lua_isnil(L, -1)) {
+            lua_pop(L, 1);
+            lua_rawgeti(L, -1, 1);
+        }
+        if (!lua_isnumber(L, -1)) {
+            lua_pop(L, 2);
+            lua_pushnil(L);
+            lua_pushstring(L, "missing physical id");
+            return 2;
+        }
+        int physical = lua_tointeger(L, -1);
+        lua_pop(L, 1);
+
+        lua_getfield(L, -1, "logical");
+        if (lua_isnil(L, -1)) {
+            lua_pop(L, 1);
+            lua_rawgeti(L, -1, 2);
+        }
+        if (!lua_isnumber(L, -1)) {
+            lua_pop(L, 2);
+            lua_pushnil(L);
+            lua_pushstring(L, "missing logical id");
+            return 2;
+        }
+        int logical = lua_tointeger(L, -1);
+        lua_pop(L, 1);
+
+        lua_pop(L, 1);
+
+        if (physical < 0 || physical > 255 || logical < 0 || logical > 255) {
+            lua_pushnil(L);
+            lua_pushstring(L, "id out of range (0-255)");
+            return 2;
+        }
+
+        pairs[count * 2] = (uint8_t)physical;
+        pairs[count * 2 + 1] = (uint8_t)logical;
+        count++;
+    }
+
+    bool ok = huskylens_mapper_set_pairs(pairs, count);
+    if (!ok) {
+        lua_pushnil(L);
+        lua_pushstring(L, "mapper set failed");
+        return 2;
+    }
+
+    lua_pushboolean(L, true);
+    return 1;
+}
+
+static int l_huskylens_mapper_sequence_get(lua_State *L) {
+    uint8_t seq[HUSKYLENS_SEQ_MAX];
+    uint8_t len = huskylens_mapper_get_sequence(seq, HUSKYLENS_SEQ_MAX);
+
+    lua_newtable(L);
+    for (uint8_t i = 0; i < len; i++) {
+        lua_pushinteger(L, i + 1);
+        lua_pushinteger(L, seq[i]);
+        lua_settable(L, -3);
+    }
+
+    return 1;
+}
+
+static int l_huskylens_mapper_sequences_get(lua_State *L) {
+    uint8_t lens[HUSKYLENS_SEQ_MAX_SEQS];
+    uint8_t seqs[HUSKYLENS_SEQ_MAX_SEQS * HUSKYLENS_SEQ_MAX];
+    uint8_t count = huskylens_mapper_get_sequences(seqs, lens, HUSKYLENS_SEQ_MAX_SEQS, HUSKYLENS_SEQ_MAX);
+
+    lua_newtable(L);
+    for (uint8_t i = 0; i < count; i++) {
+        lua_pushinteger(L, i + 1);
+        lua_newtable(L);
+        for (uint8_t j = 0; j < lens[i]; j++) {
+            lua_pushinteger(L, j + 1);
+            lua_pushinteger(L, seqs[(i * HUSKYLENS_SEQ_MAX) + j]);
+            lua_settable(L, -3);
+        }
+        lua_settable(L, -3);
+    }
+
+    return 1;
+}
+
+static int l_huskylens_mapper_on_connect(lua_State *L) {
+    if (!initialized) {
+        lua_pushnil(L);
+        lua_pushstring(L, "not initialized");
+        return 2;
+    }
+
+    if (lua_isnil(L, 1)) {
+        if (s_mapper_conn_cb) {
+            luaS_callback_destroy(s_mapper_conn_cb);
+            s_mapper_conn_cb = NULL;
+        }
+        huskylens_mapper_set_conn_cb(NULL);
+        lua_pushboolean(L, true);
+        return 1;
+    }
+
+    luaL_checktype(L, 1, LUA_TFUNCTION);
+    if (s_mapper_conn_cb) {
+        luaS_callback_destroy(s_mapper_conn_cb);
+        s_mapper_conn_cb = NULL;
+    }
+
+    s_mapper_conn_cb = luaS_callback_create(L, 1);
+    if (!s_mapper_conn_cb) {
+        lua_pushnil(L);
+        lua_pushstring(L, "callback create failed");
+        return 2;
+    }
+
+    huskylens_mapper_set_conn_cb(mapper_conn_cb);
+    lua_pushboolean(L, true);
+    return 1;
+}
+
 static const luaL_Reg huskylens[] = {
     // Basic functions
     {"init", l_huskylens_init},
@@ -1136,6 +1343,14 @@ static const luaL_Reg huskylens[] = {
     {"is_pro", l_huskylens_is_pro},
     {"check_firmware_version", l_huskylens_check_firmware_version},
     {"write_firmware_version", l_huskylens_write_firmware_version},
+
+    {"mapper_start", l_huskylens_mapper_start},
+    {"mapper_stop", l_huskylens_mapper_stop},
+    {"mapper_get", l_huskylens_mapper_get},
+    {"mapper_set", l_huskylens_mapper_set},
+    {"mapper_on_connect", l_huskylens_mapper_on_connect},
+    {"mapper_sequence_get", l_huskylens_mapper_sequence_get},
+    {"mapper_sequences_get", l_huskylens_mapper_sequences_get},
     
     {NULL, NULL}
 };
