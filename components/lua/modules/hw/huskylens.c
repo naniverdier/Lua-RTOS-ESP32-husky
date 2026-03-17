@@ -74,6 +74,16 @@
  static unsigned long get_millis() {
      return (unsigned long)(esp_timer_get_time() / 1000);
  }
+
+static void huskylens_reset_results(huskylens_t *husky) {
+    if (!husky) {
+        return;
+    }
+    husky->currentIndex = 0;
+    husky->protocolSize = 0;
+    husky->frameNum = 0;
+    husky->knowledgeSize = 0;
+}
  
  // Write protocol frame (no register byte)
  static void protocol_write(huskylens_t *husky, uint8_t *buffer, int length) {
@@ -665,7 +675,18 @@ bool huskylens_write_algorithm(huskylens_t *husky, uint8_t algorithm) {
         husky->timeOutDuration = 25; /* per-attempt timeout; retry until we get a "trained" frame */
         if (drain_one_request_response(husky, true)) {
             husky->timeOutDuration = saved_timeout;
-            return true; /* device ready and reported trained; next request() gets first user-visible frame */
+            huskylens_reset_results(husky);
+            /* Prime one or more real requests so the next read has fresh data. */
+            unsigned long prime_deadline = get_millis() + ready_timeout;
+            while (get_millis() < prime_deadline) {
+                if (huskylens_request(husky)) {
+                    if (husky->protocolSize > 0) {
+                        return true;
+                    }
+                }
+                vTaskDelay(pdMS_TO_TICKS(10));
+            }
+            return true; /* priming attempted; may still have zero results if nothing detected */
         }
         husky->timeOutDuration = saved_timeout;
         vTaskDelay(pdMS_TO_TICKS(5));
