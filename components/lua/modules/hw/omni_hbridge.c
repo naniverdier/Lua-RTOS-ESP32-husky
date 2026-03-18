@@ -490,13 +490,18 @@ static int omni_drive (lua_State *L) {
     float phi = luaL_optnumber( L, 4, 0.0 );
 
     vec3_t w = getW(x_dot, y_dot, w_dot, phi);
+    //printf("omni computed vel 1 %f %f \r\n", w.x, w.x * m_per_sec_to_tics_per_sec);
 
     motors[0].target_v = w.x * m_per_sec_to_tics_per_sec;
     motors[1].target_v = w.y * m_per_sec_to_tics_per_sec;
     motors[2].target_v = w.z * m_per_sec_to_tics_per_sec;
 
+    // motors[0].accum_error = 0;
+    // motors[1].accum_error = 0;
+    // motors[2].accum_error = 0;
+
     lua_pushboolean(L, true);
-    return 1;
+	return 1;
 }
 
 static int omni_set_encoder_callback( lua_State* L ) {
