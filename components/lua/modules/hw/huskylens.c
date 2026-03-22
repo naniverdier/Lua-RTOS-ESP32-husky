@@ -168,10 +168,11 @@ static void huskylens_reset_results(huskylens_t *husky) {
           return false;
       }
       
-      // Read return info (5 x int16 like Arduino protocolReadReturnInfo / FiveInt16)
+      /* FiveInt16 wire order matches Arduino HUSKYLENS protocolReadReturnInfo: first=protocolSize,
+       * second=knowledgeSize, third=frameNum (not frameNum before knowledgeSize). */
       husky->protocolSize = husky_lens_protocol_read_int16();
-      husky->frameNum = husky_lens_protocol_read_int16();
       husky->knowledgeSize = husky_lens_protocol_read_int16();
+      husky->frameNum = husky_lens_protocol_read_int16();
       (void)husky_lens_protocol_read_int16(); /* fourth */
       (void)husky_lens_protocol_read_int16(); /* fifth */
       if (!husky_lens_protocol_read_end()) {
@@ -221,59 +222,6 @@ static void huskylens_reset_results(huskylens_t *husky) {
       
      return true;
   }
- 
- // Drain one COMMAND_REQUEST response without storing (used to block until device is ready after algorithm change).
- // If require_learned is true, returns true only when the frame has knowledgeSize > 0 (device reports trained).
- static bool drain_one_request_response(huskylens_t *husky, bool require_learned) {
-     uint8_t *buffer = husky_lens_protocol_write_begin(COMMAND_REQUEST);
-     int length = husky_lens_protocol_write_end();
-     protocol_write(husky, buffer, length);
-
-     if (!wait_for_command(husky, COMMAND_RETURN_INFO)) {
-         return false;
-     }
-     int16_t n = husky_lens_protocol_read_int16(); /* protocolSize */
-     (void)husky_lens_protocol_read_int16(); /* frameNum */
-     int16_t knowledge_size = husky_lens_protocol_read_int16(); /* knowledgeSize */
-     (void)husky_lens_protocol_read_int16();
-     (void)husky_lens_protocol_read_int16();
-     if (!husky_lens_protocol_read_end()) {
-         return false;
-     }
-     if (n < 0 || n > 256) {
-         return false;
-     }
-     for (int i = 0; i < n; i++) {
-         if (!wait_for_command(husky, 0)) {
-             return false;
-         }
-         if (husky_lens_protocol_read_begin(COMMAND_RETURN_BLOCK)) {
-             (void)husky_lens_protocol_read_int16();
-             (void)husky_lens_protocol_read_int16();
-             (void)husky_lens_protocol_read_int16();
-             (void)husky_lens_protocol_read_int16();
-             (void)husky_lens_protocol_read_int16();
-             if (!husky_lens_protocol_read_end()) {
-                 return false;
-             }
-         } else if (husky_lens_protocol_read_begin(COMMAND_RETURN_ARROW)) {
-             (void)husky_lens_protocol_read_int16();
-             (void)husky_lens_protocol_read_int16();
-             (void)husky_lens_protocol_read_int16();
-             (void)husky_lens_protocol_read_int16();
-             (void)husky_lens_protocol_read_int16();
-             if (!husky_lens_protocol_read_end()) {
-                 return false;
-             }
-         } else {
-             return false;
-         }
-     }
-     if (require_learned && knowledge_size <= 0) {
-         return false; /* frame valid but device not yet reporting trained */
-     }
-     return true;
- }
  
   // Helper function to read knock (handshake)
   static bool read_knock(huskylens_t *husky) {
@@ -657,7 +605,7 @@ static void huskylens_reset_results(huskylens_t *husky) {
      husky->algorithmReadyTimeoutMs = ms;
  }
  
-// Set algorithm type; blocks until device responds with a full request frame with knowledgeSize > 0 (no fixed delay).
+/* Set algorithm; after COMMAND_RETURN_OK, retry huskylens_request until process_return succeeds (0..N results OK) or timeout. */
 bool huskylens_write_algorithm(huskylens_t *husky, uint8_t algorithm) {
     uint8_t *buffer = husky_lens_protocol_write_begin(COMMAND_REQUEST_ALGORITHM);
     husky_lens_protocol_write_int16(algorithm);
@@ -672,27 +620,17 @@ bool huskylens_write_algorithm(huskylens_t *husky, uint8_t algorithm) {
     unsigned long saved_timeout = husky->timeOutDuration;
     unsigned long deadline = get_millis() + ready_timeout;
     while (get_millis() < deadline) {
-        husky->timeOutDuration = 25; /* per-attempt timeout; retry until we get a "trained" frame */
-        if (drain_one_request_response(husky, true)) {
+        husky->timeOutDuration = 25;
+        if (huskylens_request(husky)) {
             husky->timeOutDuration = saved_timeout;
             huskylens_reset_results(husky);
-            /* Prime one or more real requests so the next read has fresh data. */
-            unsigned long prime_deadline = get_millis() + ready_timeout;
-            while (get_millis() < prime_deadline) {
-                if (huskylens_request(husky)) {
-                    if (husky->protocolSize > 0) {
-                        return true;
-                    }
-                }
-                vTaskDelay(pdMS_TO_TICKS(10));
-            }
-            return true; /* priming attempted; may still have zero results if nothing detected */
+            return true;
         }
         husky->timeOutDuration = saved_timeout;
         vTaskDelay(pdMS_TO_TICKS(5));
     }
     husky->timeOutDuration = saved_timeout;
-    return false; /* timeout: no frame with knowledgeSize > 0 (device may not be trained for this algorithm) */
+    return false;
 }
   
   // Learn object with ID
