@@ -16,6 +16,9 @@ extern "C" {
 
 bool huskylens_mapper_start(huskylens_t *husky);
 void huskylens_mapper_stop(void);
+bool huskylens_mapper_is_running(void);
+bool huskylens_mapper_is_connected(void);
+bool huskylens_mapper_is_ble_initialized(void);
 
 uint8_t huskylens_remap_april_tag(uint8_t physical_id);
 uint8_t huskylens_mapper_get_pairs(uint8_t *pairs, uint8_t max_pairs);

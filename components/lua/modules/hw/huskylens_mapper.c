@@ -908,10 +908,14 @@ static void handle_sequence_write(const uint8_t *data, uint16_t len) {
 }
 
 static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) {
+    ESP_LOGI(TAG, "GAP event: %d", event);
     switch (event) {
         case ESP_GAP_BLE_ADV_DATA_SET_COMPLETE_EVT:
             ESP_LOGI(TAG, "adv data set complete, starting advertising");
             esp_ble_gap_start_advertising(&s_adv_params);
+            break;
+        case ESP_GAP_BLE_ADV_START_COMPLETE_EVT:
+            ESP_LOGI(TAG, "advertising started, status=%d", param->adv_start_cmpl.status);
             break;
         default:
             break;
@@ -922,9 +926,12 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
 static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param) {
     switch (event) {
         case ESP_GATTS_REG_EVT: {
+            ESP_LOGI(TAG, "GATTS_REG_EVT: app_id=%d, status=%d", param->reg.app_id, param->reg.status);
             s_gatts_if = gatts_if;
             esp_ble_gap_set_device_name(HUSKY_MAPPER_DEVICE_NAME);
+            ESP_LOGI(TAG, "Device name set to: %s", HUSKY_MAPPER_DEVICE_NAME);
             esp_ble_gap_config_adv_data(&s_adv_data);
+            ESP_LOGI(TAG, "Configuring advertising data...");
             esp_ble_gatts_create_attr_tab(s_gatt_db, gatts_if, HUSKY_IDX_NB, HUSKY_MAPPER_SVC_INST_ID);
             break;
         }
@@ -1142,6 +1149,7 @@ bool huskylens_mapper_start(huskylens_t *husky) {
     }
 
     if (!s_ble_inited) {
+        ESP_LOGI(TAG, "Inicializando BLE para mapper...");
         esp_err_t ret = nvs_flash_init();
         if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
             ret = nvs_flash_erase();
@@ -1184,12 +1192,16 @@ bool huskylens_mapper_start(huskylens_t *husky) {
             return false;
         }
 
+        ESP_LOGI(TAG, "Registrando callbacks BLE...");
         esp_ble_gatts_register_callback(gatts_event_handler);
         esp_ble_gap_register_callback(gap_event_handler);
         esp_ble_gatts_app_register(HUSKY_MAPPER_APP_ID);
         esp_ble_gatt_set_local_mtu(200);
 
         s_ble_inited = true;
+        ESP_LOGI(TAG, "BLE mapper inicializado");
+    } else {
+        ESP_LOGW(TAG, "BLE ya estaba inicializado, omitiendo inicializacion");
     }
 
     s_husky = husky;
@@ -1198,9 +1210,11 @@ bool huskylens_mapper_start(huskylens_t *husky) {
 
     if (!s_task_running) {
         s_task_running = true;
-        if (xTaskCreate(mapper_task, "husky_mapper", 4096, NULL, 5, &s_task) != pdPASS) {
+        uint32_t free_heap = esp_get_free_heap_size();
+        ESP_LOGI(TAG, "Heap libre antes de crear task: %u bytes", free_heap);
+        if (xTaskCreate(mapper_task, "husky_mapper", 2048, NULL, 5, &s_task) != pdPASS) {
             s_task_running = false;
-            ESP_LOGE(TAG, "no se pudo crear task");
+            ESP_LOGE(TAG, "no se pudo crear task (heap libre: %u)", free_heap);
             return false;
         }
     }
@@ -1218,6 +1232,18 @@ void huskylens_mapper_stop(void) {
     s_connected = false;
     s_conn_id = 0xffff;
     ESP_LOGI(TAG, "mapper BLE detenido");
+}
+
+bool huskylens_mapper_is_running(void) {
+    return s_task_running;
+}
+
+bool huskylens_mapper_is_connected(void) {
+    return s_connected;
+}
+
+bool huskylens_mapper_is_ble_initialized(void) {
+    return s_ble_inited;
 }
 
 #else

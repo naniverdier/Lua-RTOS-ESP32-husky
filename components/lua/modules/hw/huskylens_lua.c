@@ -1112,6 +1112,24 @@ static int l_huskylens_mapper_stop(lua_State *L) {
     return 1;
 }
 
+static int l_huskylens_mapper_status(lua_State *L) {
+    lua_newtable(L);
+    
+    lua_pushstring(L, "running");
+    lua_pushboolean(L, huskylens_mapper_is_running());
+    lua_settable(L, -3);
+    
+    lua_pushstring(L, "ble_initialized");
+    lua_pushboolean(L, huskylens_mapper_is_ble_initialized());
+    lua_settable(L, -3);
+    
+    lua_pushstring(L, "connected");
+    lua_pushboolean(L, huskylens_mapper_is_connected());
+    lua_settable(L, -3);
+    
+    return 1;
+}
+
 static int l_huskylens_mapper_get(lua_State *L) {
     uint8_t pairs[HUSKYLENS_MAP_MAX * 2];
     uint8_t count = huskylens_mapper_get_pairs(pairs, HUSKYLENS_MAP_MAX);
@@ -1346,6 +1364,7 @@ static const luaL_Reg huskylens[] = {
 
     {"mapper_start", l_huskylens_mapper_start},
     {"mapper_stop", l_huskylens_mapper_stop},
+    {"mapper_status", l_huskylens_mapper_status},
     {"mapper_get", l_huskylens_mapper_get},
     {"mapper_set", l_huskylens_mapper_set},
     {"mapper_on_connect", l_huskylens_mapper_on_connect},
