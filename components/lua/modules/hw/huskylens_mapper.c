@@ -4,6 +4,7 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -93,6 +94,13 @@ static void (*s_conn_cb)(bool connected) = NULL;
 static const uint8_t HUSKY_MAPPER_SERVICE_UUID[16]      = {0x00,0x00,0xbc,0x9a,0x78,0x56,0x34,0x12,0x34,0x12,0x78,0x56,0x34,0x12,0x56,0x12};
 static const uint8_t HUSKY_MAPPER_CFG_WRITE_UUID[16]    = {0x01,0x00,0xbc,0x9a,0x78,0x56,0x34,0x12,0x34,0x12,0x78,0x56,0x34,0x12,0x56,0x12};
 static const uint8_t HUSKY_MAPPER_CFG_READ_UUID[16]     = {0x02,0x00,0xbc,0x9a,0x78,0x56,0x34,0x12,0x34,0x12,0x78,0x56,0x34,0x12,0x56,0x12};
+
+// 16-bit UUID for advertising (derived from 128-bit UUID)
+static const uint16_t husky_mapper_service_uuid_16 = 0x9ABC;
+
+// Raw advertising data
+static uint8_t *s_adv_data_raw = NULL;
+static size_t s_adv_data_raw_size = 0;
 static const uint8_t HUSKY_MAPPER_DET_NOTIFY_UUID[16]   = {0x03,0x00,0xbc,0x9a,0x78,0x56,0x34,0x12,0x34,0x12,0x78,0x56,0x34,0x12,0x56,0x12};
 static const uint8_t HUSKY_MAPPER_SEQ_WRITE_UUID[16]    = {0x04,0x00,0xbc,0x9a,0x78,0x56,0x34,0x12,0x34,0x12,0x78,0x56,0x34,0x12,0x56,0x12};
 static const uint8_t HUSKY_MAPPER_SEQ_READ_UUID[16]     = {0x05,0x00,0xbc,0x9a,0x78,0x56,0x34,0x12,0x34,0x12,0x78,0x56,0x34,0x12,0x56,0x12};
@@ -134,22 +142,6 @@ static esp_ble_adv_params_t s_adv_params = {
     .adv_filter_policy  = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
 };
 
-static esp_ble_adv_data_t s_adv_data = {
-    .set_scan_rsp = true,
-    .include_name = true,
-    .include_txpower = false,
-    .min_interval = 0x20,
-    .max_interval = 0x40,
-    .appearance = 0x00,
-    .manufacturer_len = 0,
-    .p_manufacturer_data = NULL,
-    .service_data_len = 0,
-    .p_service_data = NULL,
-    .service_uuid_len = sizeof(HUSKY_MAPPER_SERVICE_UUID),
-    .p_service_uuid = (uint8_t *)HUSKY_MAPPER_SERVICE_UUID,
-    .flag = (ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT),
-};
-
 typedef struct {
     uint8_t *buf;
     uint16_t len;
@@ -162,7 +154,7 @@ static const esp_gatts_attr_db_t s_gatt_db[HUSKY_IDX_NB] = {
     [HUSKY_IDX_SVC] = {
         {ESP_GATT_AUTO_RSP},
         {ESP_UUID_LEN_16, (uint8_t *)&primary_service_uuid, ESP_GATT_PERM_READ,
-         sizeof(HUSKY_MAPPER_SERVICE_UUID), sizeof(HUSKY_MAPPER_SERVICE_UUID), (uint8_t *)HUSKY_MAPPER_SERVICE_UUID},
+         sizeof(husky_mapper_service_uuid_16), sizeof(husky_mapper_service_uuid_16), (uint8_t *)&husky_mapper_service_uuid_16},
     },
 
     [HUSKY_IDX_CFG_WRITE_CHAR] = {
@@ -910,8 +902,8 @@ static void handle_sequence_write(const uint8_t *data, uint16_t len) {
 static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) {
     ESP_LOGI(TAG, "GAP event: %d", event);
     switch (event) {
-        case ESP_GAP_BLE_ADV_DATA_SET_COMPLETE_EVT:
-            ESP_LOGI(TAG, "adv data set complete, starting advertising");
+        case ESP_GAP_BLE_ADV_DATA_RAW_SET_COMPLETE_EVT:
+            ESP_LOGI(TAG, "adv data raw set complete, starting advertising");
             esp_ble_gap_start_advertising(&s_adv_params);
             break;
         case ESP_GAP_BLE_ADV_START_COMPLETE_EVT:
@@ -930,8 +922,8 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
             s_gatts_if = gatts_if;
             esp_ble_gap_set_device_name(HUSKY_MAPPER_DEVICE_NAME);
             ESP_LOGI(TAG, "Device name set to: %s", HUSKY_MAPPER_DEVICE_NAME);
-            esp_ble_gap_config_adv_data(&s_adv_data);
-            ESP_LOGI(TAG, "Configuring advertising data...");
+            esp_ble_gap_config_adv_data_raw(s_adv_data_raw, s_adv_data_raw_size);
+            ESP_LOGI(TAG, "Configuring raw advertising data (%d bytes)...", s_adv_data_raw_size);
             esp_ble_gatts_create_attr_tab(s_gatt_db, gatts_if, HUSKY_IDX_NB, HUSKY_MAPPER_SVC_INST_ID);
             break;
         }
@@ -1150,6 +1142,43 @@ bool huskylens_mapper_start(huskylens_t *husky) {
 
     if (!s_ble_inited) {
         ESP_LOGI(TAG, "Inicializando BLE para mapper...");
+        
+        // Build raw advertising data
+        size_t name_len = strlen(HUSKY_MAPPER_DEVICE_NAME);
+        s_adv_data_raw_size = 9 + name_len;
+        if (s_adv_data_raw_size > 31) {
+            ESP_LOGE(TAG, "Device name too long for advertising");
+            return false;
+        }
+        
+        s_adv_data_raw = (uint8_t *)malloc(s_adv_data_raw_size);
+        if (!s_adv_data_raw) {
+            ESP_LOGE(TAG, "Failed to allocate advertising data");
+            return false;
+        }
+        
+        // Flags (General Discoverable, BR/EDR Not Supported)
+        s_adv_data_raw[0] = 0x02;  // length
+        s_adv_data_raw[1] = 0x01;  // type: Flags
+        s_adv_data_raw[2] = 0x06;  // value: General Discoverable | BR/EDR Not Supported
+        
+        // Complete 16-bit Service UUID
+        s_adv_data_raw[3] = 0x03;  // length
+        s_adv_data_raw[4] = 0x03;  // type: Complete List of 16-bit Service UUIDs
+        s_adv_data_raw[5] = (husky_mapper_service_uuid_16 >> 0) & 0xFF;  // UUID LSB
+        s_adv_data_raw[6] = (husky_mapper_service_uuid_16 >> 8) & 0xFF;  // UUID MSB
+        
+        // Complete Local Name
+        s_adv_data_raw[7] = name_len + 1;  // length
+        s_adv_data_raw[8] = 0x09;          // type: Complete Local Name
+        memcpy(s_adv_data_raw + 9, HUSKY_MAPPER_DEVICE_NAME, name_len);
+        
+        ESP_LOGI(TAG, "Advertising data (%d bytes):", s_adv_data_raw_size);
+        for (size_t i = 0; i < s_adv_data_raw_size; i++) {
+            printf(" %02X", s_adv_data_raw[i]);
+        }
+        printf("\n");
+        
         esp_err_t ret = nvs_flash_init();
         if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
             ret = nvs_flash_erase();
@@ -1231,6 +1260,13 @@ void huskylens_mapper_stop(void) {
     s_notify_enabled = false;
     s_connected = false;
     s_conn_id = 0xffff;
+    
+    if (s_adv_data_raw) {
+        free(s_adv_data_raw);
+        s_adv_data_raw = NULL;
+        s_adv_data_raw_size = 0;
+    }
+    
     ESP_LOGI(TAG, "mapper BLE detenido");
 }
 
