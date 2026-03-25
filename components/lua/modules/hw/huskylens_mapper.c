@@ -838,7 +838,10 @@ static void handle_config_write(const uint8_t *data, uint16_t len) {
     uint8_t count = data[0];
     uint16_t expected = (uint16_t)(1 + (count * 2));
     if (expected > len) {
-        ESP_LOGE(TAG, "config write: longitud invalida (%u vs %u)", len, expected);
+        ESP_LOGE(TAG, "config write: longitud invalida (recibido=%u, esperado=%u para count=%u)", 
+                 len, expected, count);
+        ESP_LOGE(TAG, "  -> El cliente debe usar Long Write (prepared write) para payloads >MTU");
+        ESP_LOGE(TAG, "  -> MTU actual=%u, max_payload=%u", s_mtu_size, (s_mtu_size > 3) ? (s_mtu_size - 3) : 0);
         return;
     }
 
@@ -1031,7 +1034,10 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
             }
 
             if (param->write.handle == s_handle_table[HUSKY_IDX_CFG_WRITE_VAL]) {
+                ESP_LOGI(TAG, "config write: len=%u is_prep=%d offset=%u MTU=%u", 
+                         param->write.len, param->write.is_prep, param->write.offset, s_mtu_size);
                 if (param->write.is_prep) {
+                    ESP_LOGI(TAG, "prepared write chunk recibido");
                     if (!s_prep.buf) {
                         s_prep.buf = (uint8_t *)malloc(1 + (HUSKYLENS_MAP_MAX * 2));
                         s_prep.len = 0;
@@ -1055,6 +1061,7 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
                         esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, &rsp);
                     }
                 } else {
+                    ESP_LOGI(TAG, "write directo (no preparado)");
                     handle_config_write(param->write.value, param->write.len);
                     if (param->write.need_rsp) {
                         esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, NULL);
@@ -1096,7 +1103,10 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
             break;
         }
         case ESP_GATTS_EXEC_WRITE_EVT: {
+            ESP_LOGI(TAG, "exec write: flag=%d prep_len=%u prep_seq_len=%u",
+                     param->exec_write.exec_write_flag, s_prep.len, s_prep_seq.len);
             if (param->exec_write.exec_write_flag == ESP_GATT_PREP_WRITE_EXEC && s_prep.buf) {
+                ESP_LOGI(TAG, "ejecutando config write preparado con %u bytes", s_prep.len);
                 handle_config_write(s_prep.buf, s_prep.len);
             }
             if (s_prep.buf) {
@@ -1105,6 +1115,7 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
                 s_prep.len = 0;
             }
             if (param->exec_write.exec_write_flag == ESP_GATT_PREP_WRITE_EXEC && s_prep_seq.buf) {
+                ESP_LOGI(TAG, "ejecutando sequence write preparado con %u bytes", s_prep_seq.len);
                 handle_sequence_write(s_prep_seq.buf, s_prep_seq.len);
             }
             if (s_prep_seq.buf) {

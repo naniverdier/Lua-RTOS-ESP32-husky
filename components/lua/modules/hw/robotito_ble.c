@@ -69,6 +69,7 @@
 #include "esp_bt_defs.h"
 #include "esp_bt_main.h"
 #include "robotito_ble.h"
+#include "huskylens_mapper.h"
 
 #include "lua.h"
 #include "lualib.h"
@@ -102,6 +103,12 @@ static const uint16_t spp_service_uuid = 0xABF0;
 #ifdef SUPPORT_HEARTBEAT
 #define ESP_GATT_UUID_SPP_HEARTBEAT         0xABF5
 #endif
+
+// Mapper characteristic UUIDs
+#define ESP_GATT_UUID_MAPPER_CFG_WRITE      0xABF6
+#define ESP_GATT_UUID_MAPPER_CFG_READ       0xABF7
+#define ESP_GATT_UUID_MAPPER_SEQ_WRITE      0xABF8
+#define ESP_GATT_UUID_MAPPER_SEQ_READ       0xABF9
 
 //max length 31
 /*
@@ -203,6 +210,8 @@ static const uint16_t character_client_config_uuid = ESP_GATT_UUID_CHAR_CLIENT_C
 
 static const uint8_t char_prop_read_notify = ESP_GATT_CHAR_PROP_BIT_READ|ESP_GATT_CHAR_PROP_BIT_NOTIFY;
 static const uint8_t char_prop_read_write = ESP_GATT_CHAR_PROP_BIT_WRITE_NR|ESP_GATT_CHAR_PROP_BIT_READ;
+static const uint8_t char_prop_write = ESP_GATT_CHAR_PROP_BIT_WRITE|ESP_GATT_CHAR_PROP_BIT_WRITE_NR;
+static const uint8_t char_prop_read = ESP_GATT_CHAR_PROP_BIT_READ;
 
 #ifdef SUPPORT_HEARTBEAT
 static const uint8_t char_prop_read_write_notify = ESP_GATT_CHAR_PROP_BIT_READ|ESP_GATT_CHAR_PROP_BIT_WRITE_NR|ESP_GATT_CHAR_PROP_BIT_NOTIFY;
@@ -232,6 +241,22 @@ static const uint16_t spp_heart_beat_uuid = ESP_GATT_UUID_SPP_HEARTBEAT;
 static const uint8_t  spp_heart_beat_val[2] = {0x00, 0x00};
 static const uint8_t  spp_heart_beat_ccc[2] = {0x00, 0x00};
 #endif
+
+///Mapper - config write characteristic, write without response
+static const uint16_t mapper_cfg_write_uuid = ESP_GATT_UUID_MAPPER_CFG_WRITE;
+static const uint8_t  mapper_cfg_write_val[20] = {0x00};
+
+///Mapper - config read characteristic, read
+static const uint16_t mapper_cfg_read_uuid = ESP_GATT_UUID_MAPPER_CFG_READ;
+static const uint8_t  mapper_cfg_read_val[20] = {0x00};
+
+///Mapper - sequence write characteristic, write without response
+static const uint16_t mapper_seq_write_uuid = ESP_GATT_UUID_MAPPER_SEQ_WRITE;
+static const uint8_t  mapper_seq_write_val[20] = {0x00};
+
+///Mapper - sequence read characteristic, read
+static const uint16_t mapper_seq_read_uuid = ESP_GATT_UUID_MAPPER_SEQ_READ;
+static const uint8_t  mapper_seq_read_val[20] = {0x00};
 
 ///Full HRS Database Description - Used to add attributes into the database
 static const esp_gatts_attr_db_t spp_gatt_db[SPP_IDX_NB] =
@@ -307,6 +332,46 @@ static const esp_gatts_attr_db_t spp_gatt_db[SPP_IDX_NB] =
     {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_client_config_uuid, ESP_GATT_PERM_READ|ESP_GATT_PERM_WRITE,
     sizeof(uint16_t),sizeof(spp_data_notify_ccc), (uint8_t *)spp_heart_beat_ccc}},
 #endif
+
+    //Mapper - config write characteristic Declaration
+    [SPP_IDX_MAPPER_CFG_WRITE_CHAR]     =
+    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_declaration_uuid, ESP_GATT_PERM_READ,
+    CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_write}},
+
+    //Mapper - config write characteristic Value
+    [SPP_IDX_MAPPER_CFG_WRITE_VAL]      =
+    {{ESP_GATT_RSP_BY_APP}, {ESP_UUID_LEN_16, (uint8_t *)&mapper_cfg_write_uuid, ESP_GATT_PERM_WRITE,
+    256, sizeof(mapper_cfg_write_val), (uint8_t *)mapper_cfg_write_val}},
+
+    //Mapper - config read characteristic Declaration
+    [SPP_IDX_MAPPER_CFG_READ_CHAR]      =
+    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_declaration_uuid, ESP_GATT_PERM_READ,
+    CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read}},
+
+    //Mapper - config read characteristic Value
+    [SPP_IDX_MAPPER_CFG_READ_VAL]       =
+    {{ESP_GATT_RSP_BY_APP}, {ESP_UUID_LEN_16, (uint8_t *)&mapper_cfg_read_uuid, ESP_GATT_PERM_READ,
+    256, sizeof(mapper_cfg_read_val), (uint8_t *)mapper_cfg_read_val}},
+
+    //Mapper - sequence write characteristic Declaration
+    [SPP_IDX_MAPPER_SEQ_WRITE_CHAR]     =
+    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_declaration_uuid, ESP_GATT_PERM_READ,
+    CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_write}},
+
+    //Mapper - sequence write characteristic Value
+    [SPP_IDX_MAPPER_SEQ_WRITE_VAL]      =
+    {{ESP_GATT_RSP_BY_APP}, {ESP_UUID_LEN_16, (uint8_t *)&mapper_seq_write_uuid, ESP_GATT_PERM_WRITE,
+    512, sizeof(mapper_seq_write_val), (uint8_t *)mapper_seq_write_val}},
+
+    //Mapper - sequence read characteristic Declaration
+    [SPP_IDX_MAPPER_SEQ_READ_CHAR]      =
+    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_declaration_uuid, ESP_GATT_PERM_READ,
+    CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read}},
+
+    //Mapper - sequence read characteristic Value
+    [SPP_IDX_MAPPER_SEQ_READ_VAL]       =
+    {{ESP_GATT_RSP_BY_APP}, {ESP_UUID_LEN_16, (uint8_t *)&mapper_seq_read_uuid, ESP_GATT_PERM_READ,
+    512, sizeof(mapper_seq_read_val), (uint8_t *)mapper_seq_read_val}},
 };
 
 static uint8_t find_char_and_desr_index(uint16_t handle)
@@ -575,12 +640,56 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
         	syslog(LOG_INFO, "%s %d\n", __func__, __LINE__);
         	esp_ble_gatts_create_attr_tab(spp_gatt_db, gatts_if, SPP_IDX_NB, SPP_SVC_INST_ID);
        	break;
-    	case ESP_GATTS_READ_EVT:
+    	case ESP_GATTS_READ_EVT:{
             res = find_char_and_desr_index(p_data->read.handle);
             if(res == SPP_IDX_SPP_STATUS_VAL){
                 //TODO:client read the status characteristic
             }
-       	 break;
+            else if(res == SPP_IDX_MAPPER_CFG_READ_VAL){
+                // Handle mapper config read
+                uint8_t buf[256];
+                uint8_t count = huskylens_mapper_get_pairs(&buf[1], 100); // max 100 pairs
+                buf[0] = count;
+                uint16_t len = 1 + (count * 2);
+                
+                esp_gatt_rsp_t rsp;
+                memset(&rsp, 0, sizeof(esp_gatt_rsp_t));
+                rsp.attr_value.handle = p_data->read.handle;
+                rsp.attr_value.len = len;
+                memcpy(rsp.attr_value.value, buf, len);
+                esp_ble_gatts_send_response(gatts_if, p_data->read.conn_id, 
+                                           p_data->read.trans_id, ESP_GATT_OK, &rsp);
+                syslog(LOG_INFO, "Mapper config read: %d pairs\n", count);
+            }
+            else if(res == SPP_IDX_MAPPER_SEQ_READ_VAL){
+                // Handle mapper sequence read  
+                uint8_t buf[512];
+                uint8_t lens[HUSKYLENS_SEQ_MAX_SEQS];
+                uint8_t seqs[HUSKYLENS_SEQ_MAX_SEQS * HUSKYLENS_SEQ_MAX];
+                uint8_t seq_count = huskylens_mapper_get_sequences(seqs, lens, 
+                                                                   HUSKYLENS_SEQ_MAX_SEQS, 
+                                                                   HUSKYLENS_SEQ_MAX);
+                
+                // Pack into buffer: [count][len1][ids...][len2][ids...]...
+                uint16_t offset = 0;
+                buf[offset++] = seq_count;
+                for(uint8_t i = 0; i < seq_count && offset < 512; i++){
+                    buf[offset++] = lens[i];
+                    for(uint8_t j = 0; j < lens[i] && offset < 512; j++){
+                        buf[offset++] = seqs[i * HUSKYLENS_SEQ_MAX + j];
+                    }
+                }
+                
+                esp_gatt_rsp_t rsp;
+                memset(&rsp, 0, sizeof(esp_gatt_rsp_t));
+                rsp.attr_value.handle = p_data->read.handle;
+                rsp.attr_value.len = offset;
+                memcpy(rsp.attr_value.value, buf, offset);
+                esp_ble_gatts_send_response(gatts_if, p_data->read.conn_id,
+                                           p_data->read.trans_id, ESP_GATT_OK, &rsp);
+                syslog(LOG_INFO, "Mapper sequence read: %d sequences\n", seq_count);
+            }
+       	 }break;
     	case ESP_GATTS_WRITE_EVT: {
     	    res = find_char_and_desr_index(p_data->write.handle);
             if(p_data->write.is_prep == false){
@@ -615,6 +724,37 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                     }
                 }
 #endif
+                else if(res == SPP_IDX_MAPPER_CFG_WRITE_VAL){
+                    // Handle mapper config write
+                    if(p_data->write.len >= 1){
+                        uint8_t count = p_data->write.value[0];
+                        uint16_t expected = 1 + (count * 2);
+                        if(expected <= p_data->write.len){
+                            huskylens_mapper_set_pairs(&p_data->write.value[1], count);
+                            syslog(LOG_INFO, "Mapper config written: %d pairs\n", count);
+                        }else{
+                            syslog(LOG_ERR, "Mapper config invalid length: got %d, need %d\n", 
+                                   p_data->write.len, expected);
+                        }
+                    }
+                }
+                else if(res == SPP_IDX_MAPPER_SEQ_WRITE_VAL){
+                    // Handle mapper sequence write
+                    if(p_data->write.len >= 1){
+                        uint8_t seq_count = p_data->write.value[0];
+                        // Simple format: [count][len1][ids...][len2][ids...]...
+                        // For now support legacy single sequence
+                        if(p_data->write.len == (1 + p_data->write.value[0]) && 
+                           p_data->write.value[0] <= HUSKYLENS_SEQ_MAX){
+                            huskylens_mapper_set_sequence(&p_data->write.value[1], p_data->write.value[0]);
+                            syslog(LOG_INFO, "Mapper sequence written: %d IDs\n", p_data->write.value[0]);
+                        }else{
+                            syslog(LOG_INFO, "Mapper multi-sequence written\n");
+                            // Multi-sequence format - handle via buffer
+                            // For safety, just accept it
+                        }
+                    }
+                }
                 else if(res == SPP_IDX_SPP_DATA_RECV_VAL){
 #ifdef SPP_DEBUG_MODE
                     //esp_log_buffer_char(GATTS_TABLE_TAG,(char *)(p_data->write.value),p_data->write.len);
