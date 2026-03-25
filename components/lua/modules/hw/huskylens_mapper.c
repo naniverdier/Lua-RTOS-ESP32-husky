@@ -1144,7 +1144,11 @@ bool huskylens_mapper_start(huskylens_t *husky) {
     if (!s_ble_inited) {
         esp_err_t ret = nvs_flash_init();
         if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-            ESP_ERROR_CHECK(nvs_flash_erase());
+            ret = nvs_flash_erase();
+            if (ret != ESP_OK) {
+                ESP_LOGE(TAG, "nvs_flash_erase failed: %s", esp_err_to_name(ret));
+                return false;
+            }
             ret = nvs_flash_init();
         }
         if (ret != ESP_OK) {
@@ -1152,7 +1156,12 @@ bool huskylens_mapper_start(huskylens_t *husky) {
             return false;
         }
 
-        ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT));
+        ret = esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
+        if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+            ESP_LOGE(TAG, "esp_bt_controller_mem_release failed: %s", esp_err_to_name(ret));
+            return false;
+        }
+        
         esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
         ret = esp_bt_controller_init(&bt_cfg);
         if (ret != ESP_OK) {
