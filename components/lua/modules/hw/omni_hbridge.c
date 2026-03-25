@@ -496,9 +496,9 @@ static int omni_drive (lua_State *L) {
     motors[1].target_v = w.y * m_per_sec_to_tics_per_sec;
     motors[2].target_v = w.z * m_per_sec_to_tics_per_sec;
 
-    motors[0].accum_error = 0;
-    motors[1].accum_error = 0;
-    motors[2].accum_error = 0;
+    // motors[0].accum_error = 0;
+    // motors[1].accum_error = 0;
+    // motors[2].accum_error = 0;
 
     lua_pushboolean(L, true);
 	return 1;

@@ -77,7 +77,7 @@
  #define ALGORITHM_TAG_RECOGNITION     5
 #define ALGORITHM_OBJECT_CLASSIFICATION 6
 
-/** Default timeout (ms) to wait for first valid response with knowledgeSize > 0 after algorithm change. */
+/** Default timeout (ms) to wait for a successful huskylens_request after algorithm change. */
 #define HUSKYLENS_ALGORITHM_READY_TIMEOUT_MS  300
 
 // Result structure
@@ -96,7 +96,7 @@ typedef struct {
     uint8_t address;
     unsigned long timeOutDuration;
     unsigned long timeOutTimer;
-    /** Max ms to wait for first frame with knowledgeSize > 0 after algorithm change (0 = use default). */
+    /** Max ms to wait for a successful huskylens_request after algorithm change (0 = use default). */
     unsigned long algorithmReadyTimeoutMs;
     int16_t currentIndex;
      int16_t protocolSize;
@@ -358,17 +358,18 @@ typedef struct {
 int16_t huskylens_count_arrows_learned(huskylens_t *husky);
 
 /**
- * @brief Set max time (ms) to wait for device to report trained after algorithm change. 0 = use default (300ms).
+ * @brief Set max time (ms) to wait for a successful huskylens_request after algorithm change. 0 = default (300ms).
  * @param husky Pointer to huskylens_t structure
  * @param ms Timeout in milliseconds (0 for default)
  */
 void huskylens_set_algorithm_ready_timeout_ms(huskylens_t *husky, unsigned long ms);
 
 /**
- * @brief Set algorithm type; blocks until device sends a frame with knowledgeSize > 0 (trained) or timeout.
+ * @brief Set algorithm type; after RETURN_OK, blocks until huskylens_request completes (process_return OK) or timeout.
+ *        Empty result sets (protocolSize 0) count as success. Then clears cached counts via huskylens_reset_results.
  * @param husky Pointer to huskylens_t structure
  * @param algorithm Algorithm type to set
- * @return true if successful (device reported trained), false on timeout or not trained for this algorithm
+ * @return true if algorithm ACK and at least one successful request cycle within timeout, false otherwise
  */
 bool huskylens_write_algorithm(huskylens_t *husky, uint8_t algorithm);
  
