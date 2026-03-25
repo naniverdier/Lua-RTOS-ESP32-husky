@@ -39,7 +39,8 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
- * Lua RTOS, Lua robotito BLE module *
+ * Lua RTOS, Lua robotito BLE module
+ * Includes huskylens mapper NVS storage functions.
  */
 
 #include "sdkconfig.h"
@@ -57,9 +58,11 @@
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
 #include "freertos/adds.h"
+#include "freertos/semphr.h"
 #include "esp_system.h"
 //#include "esp_log.h"
 #include "nvs_flash.h"
+#include "nvs.h"
 #include "esp_bt.h"
 #include "string.h"
 #include "freertos/ringbuf.h"
@@ -954,6 +957,557 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
     } while (0);
 }
 
+/* ============================================================================
+ * HUSKYLENS MAPPER - NVS Storage functions
+ * Extraídas de huskylens_mapper.c para persistir el mapa y secuencias en NVS
+ * sin depender de la pila BLE separada de huskylens_mapper.
+ * ============================================================================ */
+
+#define MAPPER_NVS_NAMESPACE  "apriltag"
+#define MAPPER_NVS_KEY_MAP    "map"
+#define MAPPER_NVS_KEY_SEQ    "seq"
+
+/* ------------ estado interno del mapper ----------------------------------- */
+typedef struct {
+    uint8_t physical_id;
+    uint8_t logical_id;
+} mapper_entry_t;
+
+typedef struct {
+    uint8_t count;
+    mapper_entry_t entries[HUSKYLENS_MAP_MAX];
+} mapper_table_t;
+
+typedef struct {
+    uint8_t count;
+    uint8_t lens[HUSKYLENS_SEQ_MAX_SEQS];
+    uint8_t ids[HUSKYLENS_SEQ_MAX_SEQS][HUSKYLENS_SEQ_MAX];
+} mapper_seq_list_t;
+
+static mapper_table_t    s_mapper_map;
+static SemaphoreHandle_t s_mapper_map_mutex = NULL;
+static mapper_seq_list_t s_mapper_seqs;
+static SemaphoreHandle_t s_mapper_seq_mutex = NULL;
+static bool s_mapper_map_loaded = false;
+static bool s_mapper_seq_loaded = false;
+
+/* ------------ utilidades de mutex ----------------------------------------- */
+static void mapper_map_lock(void) {
+    if (s_mapper_map_mutex) xSemaphoreTake(s_mapper_map_mutex, portMAX_DELAY);
+}
+static void mapper_map_unlock(void) {
+    if (s_mapper_map_mutex) xSemaphoreGive(s_mapper_map_mutex);
+}
+static void mapper_seq_lock(void) {
+    if (s_mapper_seq_mutex) xSemaphoreTake(s_mapper_seq_mutex, portMAX_DELAY);
+}
+static void mapper_seq_unlock(void) {
+    if (s_mapper_seq_mutex) xSemaphoreGive(s_mapper_seq_mutex);
+}
+
+/* ------------ inicialización de mutexes ------------------------------------ */
+static bool mapper_mutexes_init(void) {
+    if (!s_mapper_map_mutex) {
+        s_mapper_map_mutex = xSemaphoreCreateMutex();
+        if (!s_mapper_map_mutex) {
+            syslog(LOG_ERR, "mapper: no se pudo crear mutex mapa\n");
+            return false;
+        }
+    }
+    if (!s_mapper_seq_mutex) {
+        s_mapper_seq_mutex = xSemaphoreCreateMutex();
+        if (!s_mapper_seq_mutex) {
+            syslog(LOG_ERR, "mapper: no se pudo crear mutex secuencia\n");
+            return false;
+        }
+    }
+    return true;
+}
+
+/* ------------ operaciones sobre el mapa ------------------------------------ */
+static void mapper_map_clear(void) {
+    mapper_map_lock();
+    s_mapper_map.count = 0;
+    memset(s_mapper_map.entries, 0, sizeof(s_mapper_map.entries));
+    mapper_map_unlock();
+}
+
+static void mapper_map_set_from_pairs(const uint8_t *data, uint8_t count) {
+    mapper_map_lock();
+    s_mapper_map.count = 0;
+    memset(s_mapper_map.entries, 0, sizeof(s_mapper_map.entries));
+    for (uint8_t i = 0; i < count && i < HUSKYLENS_MAP_MAX; i++) {
+        uint8_t physical = data[i * 2];
+        uint8_t logical  = data[i * 2 + 1];
+        bool replaced = false;
+        for (uint8_t j = 0; j < s_mapper_map.count; j++) {
+            if (s_mapper_map.entries[j].physical_id == physical) {
+                s_mapper_map.entries[j].logical_id = logical;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced && s_mapper_map.count < HUSKYLENS_MAP_MAX) {
+            s_mapper_map.entries[s_mapper_map.count].physical_id = physical;
+            s_mapper_map.entries[s_mapper_map.count].logical_id  = logical;
+            s_mapper_map.count++;
+        }
+    }
+    mapper_map_unlock();
+}
+
+static uint8_t mapper_map_pack(uint8_t *out, size_t out_len) {
+    mapper_map_lock();
+    uint8_t count  = s_mapper_map.count;
+    size_t  needed = (size_t)(1 + count * 2);
+    if (out_len < needed) {
+        count  = (uint8_t)((out_len - 1) / 2);
+        needed = (size_t)(1 + count * 2);
+    }
+    out[0] = count;
+    for (uint8_t i = 0; i < count; i++) {
+        out[1 + (i * 2)]     = s_mapper_map.entries[i].physical_id;
+        out[1 + (i * 2) + 1] = s_mapper_map.entries[i].logical_id;
+    }
+    mapper_map_unlock();
+    return (uint8_t)needed;
+}
+
+/* ------------ operaciones sobre las secuencias ----------------------------- */
+static void mapper_seq_clear(void) {
+    mapper_seq_lock();
+    s_mapper_seqs.count = 0;
+    memset(s_mapper_seqs.lens, 0, sizeof(s_mapper_seqs.lens));
+    memset(s_mapper_seqs.ids,  0, sizeof(s_mapper_seqs.ids));
+    mapper_seq_unlock();
+}
+
+static void mapper_seq_set_from_list(const uint8_t *data, uint8_t len) {
+    if (!data) return;
+    if (len > HUSKYLENS_SEQ_MAX) len = HUSKYLENS_SEQ_MAX;
+    mapper_seq_lock();
+    s_mapper_seqs.count   = 1;
+    memset(s_mapper_seqs.lens, 0, sizeof(s_mapper_seqs.lens));
+    memset(s_mapper_seqs.ids,  0, sizeof(s_mapper_seqs.ids));
+    s_mapper_seqs.lens[0] = len;
+    if (len > 0) memcpy(s_mapper_seqs.ids[0], data, len);
+    mapper_seq_unlock();
+}
+
+static uint8_t mapper_seq_pack(uint8_t *out, size_t out_len) {
+    mapper_seq_lock();
+    uint8_t count  = s_mapper_seqs.count;
+    size_t  offset = 0;
+    if (out_len == 0) { mapper_seq_unlock(); return 0; }
+    out[offset++] = count;
+    for (uint8_t i = 0; i < count && i < HUSKYLENS_SEQ_MAX_SEQS; i++) {
+        uint8_t len = s_mapper_seqs.lens[i];
+        if (len > HUSKYLENS_SEQ_MAX) len = HUSKYLENS_SEQ_MAX;
+        if (offset + 1 > out_len) break;
+        out[offset++] = len;
+        size_t copy_len = len;
+        if (offset + copy_len > out_len) copy_len = out_len - offset;
+        if (copy_len > 0) { memcpy(&out[offset], s_mapper_seqs.ids[i], copy_len); offset += copy_len; }
+        if (copy_len < len) break;
+    }
+    mapper_seq_unlock();
+    return (uint8_t)offset;
+}
+
+/* ------------ NVS: cargar mapa --------------------------------------------- */
+static esp_err_t mapper_nvs_load(void) {
+    nvs_handle handle;
+    size_t       size = 0;
+    esp_err_t    err  = nvs_open(MAPPER_NVS_NAMESPACE, NVS_READONLY, &handle);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        mapper_map_clear();
+        s_mapper_map_loaded = true;
+        return ESP_OK;
+    }
+    if (err != ESP_OK) {
+        syslog(LOG_ERR, "mapper nvs_open failed: %s\n", esp_err_to_name(err));
+        return err;
+    }
+
+    err = nvs_get_blob(handle, MAPPER_NVS_KEY_MAP, NULL, &size);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        nvs_close(handle);
+        mapper_map_clear();
+        s_mapper_map_loaded = true;
+        return ESP_OK;
+    }
+    if (err != ESP_OK || size < 1) {
+        syslog(LOG_ERR, "mapper nvs_get_blob size failed: %s\n", esp_err_to_name(err));
+        nvs_close(handle);
+        mapper_map_clear();
+        s_mapper_map_loaded = true;
+        return err;
+    }
+
+    uint8_t *buf = (uint8_t *)malloc(size);
+    if (!buf) { nvs_close(handle); return ESP_ERR_NO_MEM; }
+
+    err = nvs_get_blob(handle, MAPPER_NVS_KEY_MAP, buf, &size);
+    nvs_close(handle);
+    if (err != ESP_OK) {
+        syslog(LOG_ERR, "mapper nvs_get_blob failed: %s\n", esp_err_to_name(err));
+        free(buf);
+        mapper_map_clear();
+        s_mapper_map_loaded = true;
+        return err;
+    }
+
+    uint8_t count     = buf[0];
+    uint8_t max_pairs = (uint8_t)((size - 1) / 2);
+    if (count > max_pairs) count = max_pairs;
+    mapper_map_set_from_pairs(&buf[1], count);
+    free(buf);
+    s_mapper_map_loaded = true;
+    syslog(LOG_INFO, "mapper: mapa cargado desde NVS (%u entradas)\n", count);
+    return ESP_OK;
+}
+
+/* ------------ NVS: guardar mapa -------------------------------------------- */
+static esp_err_t mapper_nvs_save(void) {
+    nvs_handle handle;
+    esp_err_t    err = nvs_open(MAPPER_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        syslog(LOG_ERR, "mapper nvs_open (rw) failed: %s\n", esp_err_to_name(err));
+        return err;
+    }
+
+    uint8_t buf[1 + (HUSKYLENS_MAP_MAX * 2)];
+    uint8_t len = mapper_map_pack(buf, sizeof(buf));
+    err = nvs_set_blob(handle, MAPPER_NVS_KEY_MAP, buf, len);
+    if (err != ESP_OK) {
+        syslog(LOG_ERR, "mapper nvs_set_blob failed: %s\n", esp_err_to_name(err));
+        nvs_close(handle);
+        return err;
+    }
+
+    err = nvs_commit(handle);
+    nvs_close(handle);
+    if (err != ESP_OK) {
+        syslog(LOG_ERR, "mapper nvs_commit failed: %s\n", esp_err_to_name(err));
+        return err;
+    }
+
+    syslog(LOG_INFO, "mapper: mapa guardado en NVS (%u bytes)\n", len);
+    return ESP_OK;
+}
+
+/* ------------ NVS: cargar secuencias --------------------------------------- */
+static esp_err_t mapper_nvs_load_seq(void) {
+    nvs_handle handle;
+    size_t       size = 0;
+    esp_err_t    err  = nvs_open(MAPPER_NVS_NAMESPACE, NVS_READONLY, &handle);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        mapper_seq_clear();
+        s_mapper_seq_loaded = true;
+        return ESP_OK;
+    }
+    if (err != ESP_OK) {
+        syslog(LOG_ERR, "mapper nvs_open seq failed: %s\n", esp_err_to_name(err));
+        return err;
+    }
+
+    err = nvs_get_blob(handle, MAPPER_NVS_KEY_SEQ, NULL, &size);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        nvs_close(handle);
+        mapper_seq_clear();
+        s_mapper_seq_loaded = true;
+        return ESP_OK;
+    }
+    if (err != ESP_OK || size < 1) {
+        syslog(LOG_ERR, "mapper nvs_get_blob seq size failed: %s\n", esp_err_to_name(err));
+        nvs_close(handle);
+        mapper_seq_clear();
+        s_mapper_seq_loaded = true;
+        return err;
+    }
+
+    uint8_t *buf = (uint8_t *)malloc(size);
+    if (!buf) { nvs_close(handle); return ESP_ERR_NO_MEM; }
+
+    err = nvs_get_blob(handle, MAPPER_NVS_KEY_SEQ, buf, &size);
+    nvs_close(handle);
+    if (err != ESP_OK) {
+        syslog(LOG_ERR, "mapper nvs_get_blob seq failed: %s\n", esp_err_to_name(err));
+        free(buf);
+        mapper_seq_clear();
+        s_mapper_seq_loaded = true;
+        return err;
+    }
+
+    uint8_t seq_count = buf[0];
+    if (seq_count > HUSKYLENS_SEQ_MAX_SEQS) seq_count = HUSKYLENS_SEQ_MAX_SEQS;
+
+    mapper_seq_lock();
+    s_mapper_seqs.count = 0;
+    memset(s_mapper_seqs.lens, 0, sizeof(s_mapper_seqs.lens));
+    memset(s_mapper_seqs.ids,  0, sizeof(s_mapper_seqs.ids));
+
+    size_t offset = 1;
+    for (uint8_t i = 0; i < seq_count && offset < size; i++) {
+        uint8_t slen      = buf[offset++];
+        if (slen > HUSKYLENS_SEQ_MAX) slen = HUSKYLENS_SEQ_MAX;
+        size_t  remaining = size - offset;
+        uint8_t copy_len  = slen;
+        if (copy_len > remaining) copy_len = (uint8_t)remaining;
+        if (copy_len > 0) {
+            memcpy(s_mapper_seqs.ids[i], &buf[offset], copy_len);
+            offset += copy_len;
+        }
+        s_mapper_seqs.lens[i] = copy_len;
+        s_mapper_seqs.count   = (uint8_t)(i + 1);
+        if (copy_len < slen) break;
+    }
+    mapper_seq_unlock();
+
+    free(buf);
+    s_mapper_seq_loaded = true;
+    syslog(LOG_INFO, "mapper: secuencias cargadas desde NVS (%u)\n", s_mapper_seqs.count);
+    return ESP_OK;
+}
+
+/* ------------ NVS: guardar secuencias -------------------------------------- */
+static esp_err_t mapper_nvs_save_seq(void) {
+    nvs_handle handle;
+    esp_err_t    err = nvs_open(MAPPER_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        syslog(LOG_ERR, "mapper nvs_open seq (rw) failed: %s\n", esp_err_to_name(err));
+        return err;
+    }
+
+    uint8_t buf[1 + (HUSKYLENS_SEQ_MAX_SEQS * (1 + HUSKYLENS_SEQ_MAX))];
+    uint8_t len = mapper_seq_pack(buf, sizeof(buf));
+    err = nvs_set_blob(handle, MAPPER_NVS_KEY_SEQ, buf, len);
+    if (err != ESP_OK) {
+        syslog(LOG_ERR, "mapper nvs_set_blob seq failed: %s\n", esp_err_to_name(err));
+        nvs_close(handle);
+        return err;
+    }
+
+    err = nvs_commit(handle);
+    nvs_close(handle);
+    if (err != ESP_OK) {
+        syslog(LOG_ERR, "mapper nvs_commit seq failed: %s\n", esp_err_to_name(err));
+        return err;
+    }
+
+    syslog(LOG_INFO, "mapper: secuencia guardada en NVS (%u bytes)\n", len);
+    return ESP_OK;
+}
+
+/* ============================================================================
+ * API Lua del mapper (funciones extra expuestas al módulo Lua)
+ * ============================================================================ */
+
+/*
+ * robotito_ble.mapper_init()
+ * Inicializa los mutexes y carga el mapa y las secuencias desde NVS.
+ * Retorna true en éxito, nil + mensaje en error.
+ */
+static int robotito_ble_mapper_init(lua_State *L) {
+    if (!mapper_mutexes_init()) {
+        lua_pushnil(L);
+        lua_pushstring(L, "mapper: no se pudieron crear los mutexes");
+        return 2;
+    }
+    mapper_nvs_load();
+    mapper_nvs_load_seq();
+    lua_pushboolean(L, true);
+    return 1;
+}
+
+/*
+ * robotito_ble.mapper_get_pairs()
+ * Retorna una tabla Lua con los pares {physical, logical} almacenados.
+ * Formato: { {1,2}, {3,4}, ... }
+ */
+static int robotito_ble_mapper_get_pairs(lua_State *L) {
+    if (!s_mapper_map_loaded) mapper_nvs_load();
+
+    mapper_map_lock();
+    lua_newtable(L);
+    for (uint8_t i = 0; i < s_mapper_map.count; i++) {
+        lua_newtable(L);
+        lua_pushinteger(L, s_mapper_map.entries[i].physical_id);
+        lua_rawseti(L, -2, 1);
+        lua_pushinteger(L, s_mapper_map.entries[i].logical_id);
+        lua_rawseti(L, -2, 2);
+        lua_rawseti(L, -2, (int)(i + 1));
+    }
+    mapper_map_unlock();
+    return 1;
+}
+
+/*
+ * robotito_ble.mapper_set_pairs({{physical, logical}, ...})
+ * Recibe una tabla Lua con pares y los persiste en NVS.
+ * Retorna true en éxito, nil + mensaje en error.
+ */
+static int robotito_ble_mapper_set_pairs(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+
+    uint8_t pairs[HUSKYLENS_MAP_MAX * 2];
+    uint8_t count = 0;
+
+    lua_pushnil(L);
+    while (lua_next(L, 1) != 0 && count < HUSKYLENS_MAP_MAX) {
+        luaL_checktype(L, -1, LUA_TTABLE);
+        lua_rawgeti(L, -1, 1);
+        lua_rawgeti(L, -2, 2);
+        pairs[count * 2]     = (uint8_t)luaL_checkinteger(L, -2);
+        pairs[count * 2 + 1] = (uint8_t)luaL_checkinteger(L, -1);
+        lua_pop(L, 2);
+        count++;
+        lua_pop(L, 1);
+    }
+
+    if (!mapper_mutexes_init()) {
+        lua_pushnil(L);
+        lua_pushstring(L, "mapper: mutexes no inicializados");
+        return 2;
+    }
+
+    mapper_map_set_from_pairs(pairs, count);
+    s_mapper_map_loaded = true;
+
+    if (mapper_nvs_save() != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, "mapper: error al guardar mapa en NVS");
+        return 2;
+    }
+
+    lua_pushboolean(L, true);
+    return 1;
+}
+
+/*
+ * robotito_ble.mapper_get_sequence()
+ * Retorna la primera secuencia almacenada como tabla Lua de enteros.
+ * Retorna una tabla vacía si no hay secuencia.
+ */
+static int robotito_ble_mapper_get_sequence(lua_State *L) {
+    if (!s_mapper_seq_loaded) mapper_nvs_load_seq();
+
+    mapper_seq_lock();
+    uint8_t len = (s_mapper_seqs.count > 0) ? s_mapper_seqs.lens[0] : 0;
+    lua_newtable(L);
+    for (uint8_t i = 0; i < len; i++) {
+        lua_pushinteger(L, s_mapper_seqs.ids[0][i]);
+        lua_rawseti(L, -2, (int)(i + 1));
+    }
+    mapper_seq_unlock();
+    return 1;
+}
+
+/*
+ * robotito_ble.mapper_set_sequence({id1, id2, ...})
+ * Recibe una tabla Lua con IDs y la persiste en NVS.
+ * Retorna true en éxito, nil + mensaje en error.
+ */
+static int robotito_ble_mapper_set_sequence(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+
+    uint8_t seq[HUSKYLENS_SEQ_MAX];
+    uint8_t len = 0;
+
+    lua_pushnil(L);
+    while (lua_next(L, 1) != 0 && len < HUSKYLENS_SEQ_MAX) {
+        seq[len++] = (uint8_t)luaL_checkinteger(L, -1);
+        lua_pop(L, 1);
+    }
+
+    if (!mapper_mutexes_init()) {
+        lua_pushnil(L);
+        lua_pushstring(L, "mapper: mutexes no inicializados");
+        return 2;
+    }
+
+    mapper_seq_set_from_list(seq, len);
+    s_mapper_seq_loaded = true;
+
+    if (mapper_nvs_save_seq() != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, "mapper: error al guardar secuencia en NVS");
+        return 2;
+    }
+
+    lua_pushboolean(L, true);
+    return 1;
+}
+
+/*
+ * robotito_ble.mapper_remap(physical_id)  ->  logical_id
+ * Aplica el mapa: dado un physical_id retorna el logical_id correspondiente.
+ * Si no hay mapeo, retorna el mismo physical_id.
+ */
+static int robotito_ble_mapper_remap(lua_State *L) {
+    uint8_t physical = (uint8_t)luaL_checkinteger(L, 1);
+    uint8_t logical  = physical;
+
+    if (!s_mapper_map_loaded) mapper_nvs_load();
+
+    mapper_map_lock();
+    for (uint8_t i = 0; i < s_mapper_map.count; i++) {
+        if (s_mapper_map.entries[i].physical_id == physical) {
+            logical = s_mapper_map.entries[i].logical_id;
+            break;
+        }
+    }
+    mapper_map_unlock();
+
+    lua_pushinteger(L, logical);
+    return 1;
+}
+
+/*
+ * robotito_ble.mapper_clear_map()
+ * Borra el mapa en memoria y en NVS.
+ */
+static int robotito_ble_mapper_clear_map(lua_State *L) {
+    if (!mapper_mutexes_init()) {
+        lua_pushnil(L);
+        lua_pushstring(L, "mapper: mutexes no inicializados");
+        return 2;
+    }
+    mapper_map_clear();
+    s_mapper_map_loaded = true;
+    if (mapper_nvs_save() != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, "mapper: error al borrar mapa en NVS");
+        return 2;
+    }
+    lua_pushboolean(L, true);
+    return 1;
+}
+
+/*
+ * robotito_ble.mapper_clear_sequence()
+ * Borra la secuencia en memoria y en NVS.
+ */
+static int robotito_ble_mapper_clear_sequence(lua_State *L) {
+    if (!mapper_mutexes_init()) {
+        lua_pushnil(L);
+        lua_pushstring(L, "mapper: mutexes no inicializados");
+        return 2;
+    }
+    mapper_seq_clear();
+    s_mapper_seq_loaded = true;
+    if (mapper_nvs_save_seq() != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, "mapper: error al borrar secuencia en NVS");
+        return 2;
+    }
+    lua_pushboolean(L, true);
+    return 1;
+}
+
+/* ============================================================================
+ * Funciones originales de robotito_ble
+ * ============================================================================ */
 
 static int robotito_ble_init (lua_State *L) {
 	if (robotito_ble_initialized) {
@@ -1180,10 +1734,20 @@ static int robotito_ble_line (lua_State *L) {
 }
 
 static const luaL_Reg robotito_ble[] = {
-    {"init", robotito_ble_init},
-    {"send", robotito_ble_send},
-    {"set_rcv_callback", robotito_ble_rcv},
+    /* --- funciones originales --- */
+    {"init",              robotito_ble_init},
+    {"send",              robotito_ble_send},
+    {"set_rcv_callback",  robotito_ble_rcv},
     {"set_line_callback", robotito_ble_line},
+    /* --- funciones mapper NVS --- */
+    {"mapper_init",           robotito_ble_mapper_init},
+    {"mapper_get_pairs",      robotito_ble_mapper_get_pairs},
+    {"mapper_set_pairs",      robotito_ble_mapper_set_pairs},
+    {"mapper_get_sequence",   robotito_ble_mapper_get_sequence},
+    {"mapper_set_sequence",   robotito_ble_mapper_set_sequence},
+    {"mapper_remap",          robotito_ble_mapper_remap},
+    {"mapper_clear_map",      robotito_ble_mapper_clear_map},
+    {"mapper_clear_sequence", robotito_ble_mapper_clear_sequence},
     {NULL, NULL}
 };
 
