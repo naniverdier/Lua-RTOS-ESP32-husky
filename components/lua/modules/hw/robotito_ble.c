@@ -1087,35 +1087,33 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
             free(buf);
             free(rsp);
         } else if (res == SPP_IDX_MAPPER_SEQ_READ_VAL) {
+            // Handle mapper sequence read - read directly from s_mapper_seqs
+            // (always in sync with NVS writes, unlike huskylens_mapper)
+            if (!s_mapper_seq_loaded) mapper_nvs_load_seq();
+
             uint8_t *buf = (uint8_t *)malloc(512);
-            uint8_t *lens = (uint8_t *)malloc(HUSKYLENS_SEQ_MAX_SEQS);
-            uint8_t *seqs = (uint8_t *)malloc(HUSKYLENS_SEQ_MAX_SEQS * HUSKYLENS_SEQ_MAX);
             esp_gatt_rsp_t *rsp = (esp_gatt_rsp_t *)malloc(sizeof(esp_gatt_rsp_t));
 
-            if (buf == NULL || lens == NULL || seqs == NULL || rsp == NULL) {
+            if(buf == NULL || rsp == NULL){
                 syslog(LOG_ERR, "Failed to allocate memory for mapper sequence read\n");
-                if (buf) free(buf);
-                if (lens) free(lens);
-                if (seqs) free(seqs);
-                if (rsp) free(rsp);
+                if(buf) free(buf);
+                if(rsp) free(rsp);
                 esp_ble_gatts_send_response(gatts_if, p_data->read.conn_id,
                                             p_data->read.trans_id, ESP_GATT_OUT_OF_RANGE, NULL);
                 break;
             }
 
-            uint8_t seq_count = huskylens_mapper_get_sequences(seqs, lens,
-                                                                HUSKYLENS_SEQ_MAX_SEQS,
-                                                                HUSKYLENS_SEQ_MAX);
-
-            /* Pack: [count][len1][ids...][len2][ids...]... */
+            // Pack directly from s_mapper_seqs: [count][len1][ids...][len2][ids...]...
+            mapper_seq_lock();
             uint16_t offset = 0;
-            buf[offset++] = seq_count;
-            for (uint8_t i = 0; i < seq_count && offset < 512; i++) {
-                buf[offset++] = lens[i];
-                for (uint8_t j = 0; j < lens[i] && offset < 512; j++) {
-                    buf[offset++] = seqs[i * HUSKYLENS_SEQ_MAX + j];
+            buf[offset++] = s_mapper_seqs.count;
+            for(uint8_t i = 0; i < s_mapper_seqs.count && offset < 512; i++){
+                buf[offset++] = s_mapper_seqs.lens[i];
+                for(uint8_t j = 0; j < s_mapper_seqs.lens[i] && offset < 512; j++){
+                    buf[offset++] = s_mapper_seqs.ids[i][j];
                 }
             }
+            mapper_seq_unlock();
 
             memset(rsp, 0, sizeof(esp_gatt_rsp_t));
             rsp->attr_value.handle = p_data->read.handle;
@@ -1123,11 +1121,9 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
             memcpy(rsp->attr_value.value, buf, offset);
             esp_ble_gatts_send_response(gatts_if, p_data->read.conn_id,
                                         p_data->read.trans_id, ESP_GATT_OK, rsp);
-            syslog(LOG_INFO, "Mapper sequence read: %d sequences\n", seq_count);
+            syslog(LOG_INFO, "Mapper sequence read: %d sequences\n", s_mapper_seqs.count);
 
             free(buf);
-            free(lens);
-            free(seqs);
             free(rsp);
         }
         break;
