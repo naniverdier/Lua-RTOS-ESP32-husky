@@ -486,6 +486,8 @@ static void free_write_buffer(void)
     SppRecvDataBuff.node_num = 0;
     SppRecvDataBuff.buff_size = 0;
     SppRecvDataBuff.first_node = NULL;
+    temp_spp_recv_data_node_p1 = NULL;
+    temp_spp_recv_data_node_p2 = NULL;
 }
 
 /* ============================================================================
@@ -495,8 +497,6 @@ static void free_write_buffer(void)
 void spp_rcv_task(void *arg)
 {
     for (;;) {
-        vTaskDelay(50 / portTICK_PERIOD_MS);
-
         size_t item_size;
         char *item_ptr = (char *)xRingbufferReceiveUpTo(stream_buffer_handle,
                 &item_size, portMAX_DELAY, STREAM_BUFFER_SIZE_BYTES);
@@ -611,7 +611,6 @@ void spp_cmd_task(void *arg)
     uint8_t *cmd_id;
 
     for (;;) {
-        vTaskDelay(50 / portTICK_PERIOD_MS);
         if (xQueueReceive(cmd_cmd_queue, &cmd_id, portMAX_DELAY)) {
             printf("command: ");
             for (int i = 0; i < strlen((char *)cmd_id); i++) {
@@ -1258,9 +1257,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
 
     case ESP_GATTS_EXEC_WRITE_EVT:
         syslog(LOG_INFO, "ESP_GATTS_EXEC_WRITE_EVT\n");
-        if (p_data->exec_write.exec_write_flag) {
-            free_write_buffer();
-        }
+        free_write_buffer();
         break;
 
     case ESP_GATTS_MTU_EVT:
@@ -1495,6 +1492,72 @@ static int robotito_ble_mapper_set_sequence(lua_State *L) {
     return 1;
 }
 
+static int robotito_ble_mapper_get_sequences(lua_State *L) {
+    if (!s_mapper_seq_loaded) mapper_nvs_load_seq();
+
+    mapper_seq_lock();
+    lua_newtable(L);
+    for (uint8_t i = 0; i < s_mapper_seqs.count; i++) {
+        lua_newtable(L);
+        uint8_t len = s_mapper_seqs.lens[i];
+        for (uint8_t j = 0; j < len; j++) {
+            lua_pushinteger(L, s_mapper_seqs.ids[i][j]);
+            lua_rawseti(L, -2, (int)(j + 1));
+        }
+        lua_rawseti(L, -2, (int)(i + 1));
+    }
+    mapper_seq_unlock();
+    return 1;
+}
+
+static int robotito_ble_mapper_set_sequences(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+
+    uint8_t seq_count = 0;
+    uint8_t lens[HUSKYLENS_SEQ_MAX_SEQS];
+    uint8_t ids[HUSKYLENS_SEQ_MAX_SEQS][HUSKYLENS_SEQ_MAX];
+
+    lua_pushnil(L);
+    while (lua_next(L, 1) != 0 && seq_count < HUSKYLENS_SEQ_MAX_SEQS) {
+        luaL_checktype(L, -1, LUA_TTABLE);
+        uint8_t len = 0;
+        lua_pushnil(L);
+        while (lua_next(L, -2) != 0 && len < HUSKYLENS_SEQ_MAX) {
+            ids[seq_count][len++] = (uint8_t)luaL_checkinteger(L, -1);
+            lua_pop(L, 1);
+        }
+        lens[seq_count] = len;
+        seq_count++;
+        lua_pop(L, 1);
+    }
+
+    if (!mapper_mutexes_init()) {
+        lua_pushnil(L);
+        lua_pushstring(L, "mapper: mutexes not initialized");
+        return 2;
+    }
+
+    mapper_seq_lock();
+    s_mapper_seqs.count = seq_count;
+    memset(s_mapper_seqs.lens, 0, sizeof(s_mapper_seqs.lens));
+    memset(s_mapper_seqs.ids,  0, sizeof(s_mapper_seqs.ids));
+    for (uint8_t i = 0; i < seq_count; i++) {
+        s_mapper_seqs.lens[i] = lens[i];
+        if (lens[i] > 0) memcpy(s_mapper_seqs.ids[i], ids[i], lens[i]);
+    }
+    mapper_seq_unlock();
+    s_mapper_seq_loaded = true;
+
+    if (mapper_nvs_save_seq() != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, "mapper: error saving sequences to NVS");
+        return 2;
+    }
+
+    lua_pushboolean(L, true);
+    return 1;
+}
+
 static int robotito_ble_mapper_remap(lua_State *L) {
     uint8_t physical = (uint8_t)luaL_checkinteger(L, 1);
     uint8_t logical  = physical;
@@ -1636,8 +1699,6 @@ static int robotito_ble_init(lua_State *L) {
     esp_ble_gap_register_callback(gap_event_handler);
     esp_ble_gatts_app_register(ESP_SPP_APP_ID);
 
-    xTaskCreate(spp_rcv_task, "spp_rcv_task", CONFIG_ROBOTITO_BLE_STACK_SIZE, NULL, 10, NULL);
-
     stream_buffer_handle = xRingbufferCreate(STREAM_BUFFER_SIZE_BYTES, RINGBUF_TYPE_BYTEBUF);
     if (stream_buffer_handle == NULL) {
         syslog(LOG_ERR, "%s failed to create ring buffer\n", __func__);
@@ -1645,6 +1706,7 @@ static int robotito_ble_init(lua_State *L) {
         lua_pushstring(L, "failed to create ring buffer");
         return 2;
     }
+    xTaskCreate(spp_rcv_task, "spp_rcv_task", CONFIG_ROBOTITO_BLE_STACK_SIZE, NULL, 10, NULL);
 
     mapper_evt_buffer_handle = xRingbufferCreate(MAPPER_EVT_BUFFER_SIZE_BYTES, RINGBUF_TYPE_BYTEBUF);
     if (mapper_evt_buffer_handle == NULL) {
@@ -1790,38 +1852,27 @@ static int robotito_ble_set_disconnect_callback(lua_State *L) {
 }
 
 static int robotito_ble_set_mapper_cfg_callback(lua_State *L) {
-    bool enable = lua_toboolean(L, 1);
-    if (enable) {
-        luaL_checktype(L, 1, LUA_TFUNCTION);
-        lua_pushvalue(L, 1);
-        robotito_ble_mapper_cfg_callback = luaL_ref(L, LUA_REGISTRYINDEX);
-    } else {
-        if (robotito_ble_mapper_cfg_callback == LUA_REFNIL) {
-            lua_pushnil(L);
-            lua_pushstring(L, "no mapper cfg callback set");
-            return 2;
-        }
-        robotito_ble_mapper_cfg_callback = LUA_REFNIL;
-    }
+    luaL_checktype(L, 1, LUA_TFUNCTION);
+    lua_pushvalue(L, 1);
+    robotito_ble_mapper_cfg_callback = luaL_ref(L, LUA_REGISTRYINDEX);
     lua_pushboolean(L, true);
     return 1;
 }
 
 static int robotito_ble_set_mapper_seq_callback(lua_State *L) {
-    bool enable = lua_toboolean(L, 1);
-    if (enable) {
-        luaL_checktype(L, 1, LUA_TFUNCTION);
-        lua_pushvalue(L, 1);
-        robotito_ble_mapper_seq_callback = luaL_ref(L, LUA_REGISTRYINDEX);
-    } else {
-        if (robotito_ble_mapper_seq_callback == LUA_REFNIL) {
-            lua_pushnil(L);
-            lua_pushstring(L, "no mapper seq callback set");
-            return 2;
-        }
-        robotito_ble_mapper_seq_callback = LUA_REFNIL;
-    }
+    luaL_checktype(L, 1, LUA_TFUNCTION);
+    lua_pushvalue(L, 1);
+    robotito_ble_mapper_seq_callback = luaL_ref(L, LUA_REGISTRYINDEX);
     lua_pushboolean(L, true);
+    return 1;
+}
+
+static int robotito_ble_mem_info(lua_State *L) {    
+    size_t ram_free = esp_get_free_heap_size();    
+    size_t ram_min_free = esp_get_minimum_free_heap_size();
+    lua_newtable(L);
+    lua_pushinteger(L, (lua_Integer)ram_free);    lua_setfield(L, -2, "free");
+    lua_pushinteger(L, (lua_Integer)ram_min_free);    lua_setfield(L, -2, "min_free");
     return 1;
 }
 
@@ -1843,9 +1894,12 @@ static const luaL_Reg robotito_ble[] = {
     {"mapper_set_pairs",        robotito_ble_mapper_set_pairs},
     {"mapper_get_sequence",     robotito_ble_mapper_get_sequence},
     {"mapper_set_sequence",     robotito_ble_mapper_set_sequence},
+    {"mapper_get_sequences",    robotito_ble_mapper_get_sequences},
+    {"mapper_set_sequences",    robotito_ble_mapper_set_sequences},
     {"mapper_remap",            robotito_ble_mapper_remap},
     {"mapper_clear_map",        robotito_ble_mapper_clear_map},
     {"mapper_clear_sequence",   robotito_ble_mapper_clear_sequence},
+    {"mem_info", robotito_ble_mem_info},
     {NULL, NULL}
 };
 
