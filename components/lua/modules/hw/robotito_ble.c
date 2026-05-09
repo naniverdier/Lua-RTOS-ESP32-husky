@@ -116,6 +116,8 @@ void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName) {
  * ============================================================================ */
 
 bool robotito_ble_initialized = false;
+static bool classic_bt_mem_released = false;
+static bool robotito_ble_permanently_down = false;
 int robotito_ble_rcv_callback = LUA_REFNIL;
 int robotito_ble_line_callback = LUA_REFNIL;
 int robotito_ble_connect_callback = LUA_REFNIL;
@@ -123,10 +125,16 @@ int robotito_ble_disconnect_callback = LUA_REFNIL;
 int robotito_ble_mapper_cfg_callback = LUA_REFNIL;
 int robotito_ble_mapper_seq_callback = LUA_REFNIL;
 
+static SemaphoreHandle_t lua_mutex = NULL;
+
 char *line_buff = NULL;
 int line_buff_last = 0;
 RingbufHandle_t stream_buffer_handle;
 RingbufHandle_t mapper_evt_buffer_handle;
+
+static TaskHandle_t spp_rcv_task_handle    = NULL;
+static TaskHandle_t mapper_evt_task_handle = NULL;
+static TaskHandle_t spp_cmd_task_handle    = NULL;
 
 /* ============================================================================
  * BLE GATT state
@@ -374,8 +382,10 @@ static const esp_gatts_attr_db_t spp_gatt_db[SPP_IDX_NB] =
 static void call_lua_bytes_callback(int callback_ref, const uint8_t *data, size_t len) {
     if (callback_ref == LUA_REFNIL) return;
 
+    xSemaphoreTake(lua_mutex, portMAX_DELAY);
     lua_State *L = pvGetLuaState();
     if (!L) {
+        xSemaphoreGive(lua_mutex);
         syslog(LOG_ERR, "call_lua_bytes_callback: Lua state NULL\n");
         return;
     }
@@ -387,6 +397,7 @@ static void call_lua_bytes_callback(int callback_ref, const uint8_t *data, size_
     lua_pushlstring(TL, (const char *)data, len);
     int status = lua_pcall(TL, 1, 0, 0);
     luaL_unref(TL, LUA_REGISTRYINDEX, tref);
+    xSemaphoreGive(lua_mutex);
 
     if (status != LUA_OK) {
         const char *msg = lua_tostring(TL, -1);
@@ -465,6 +476,12 @@ static bool store_wr_buffer(esp_ble_gatts_cb_param_t *p_data)
     SppRecvDataBuff.buff_size += p_data->write.len;
     temp_spp_recv_data_node_p1->next_node = NULL;
     temp_spp_recv_data_node_p1->node_buff = (uint8_t *)malloc(p_data->write.len);
+    if (temp_spp_recv_data_node_p1->node_buff == NULL) {
+        syslog(LOG_INFO, "malloc error %s %d\n", __func__, __LINE__);
+        free(temp_spp_recv_data_node_p1);
+        SppRecvDataBuff.buff_size -= p_data->write.len;
+        return false;
+    }
     temp_spp_recv_data_node_p2 = temp_spp_recv_data_node_p1;
     memcpy(temp_spp_recv_data_node_p1->node_buff, p_data->write.value, p_data->write.len);
     if (SppRecvDataBuff.node_num == 0) {
@@ -503,6 +520,7 @@ void spp_rcv_task(void *arg)
 
         if (item_ptr != NULL) {
             if (robotito_ble_rcv_callback != LUA_REFNIL) {
+                xSemaphoreTake(lua_mutex, portMAX_DELAY);
                 lua_State *L = pvGetLuaState();
                 lua_State *TL = lua_newthread(L);
                 int tref = luaL_ref(L, LUA_REGISTRYINDEX);
@@ -512,6 +530,7 @@ void spp_rcv_task(void *arg)
                 lua_pushlstring(TL, item_ptr, item_size);
                 int status = lua_pcall(TL, 1, 0, 0);
                 luaL_unref(TL, LUA_REGISTRYINDEX, tref);
+                xSemaphoreGive(lua_mutex);
 
                 if (status != LUA_OK) {
                     const char *msg = lua_tostring(TL, -1);
@@ -523,6 +542,7 @@ void spp_rcv_task(void *arg)
             if (robotito_ble_line_callback != LUA_REFNIL) {
                 if (line_buff_last + item_size > CONFIG_ROBOTITO_BLE_LINEBUFFER) {
                     /* Buffer overflow: flush current buffer as error */
+                    xSemaphoreTake(lua_mutex, portMAX_DELAY);
                     lua_State *L = pvGetLuaState();
                     lua_State *TL = lua_newthread(L);
                     int tref = luaL_ref(L, LUA_REGISTRYINDEX);
@@ -534,6 +554,7 @@ void spp_rcv_task(void *arg)
                     line_buff_last = 0;
                     int status = lua_pcall(TL, 2, 0, 0);
                     luaL_unref(TL, LUA_REGISTRYINDEX, tref);
+                    xSemaphoreGive(lua_mutex);
 
                     if (status != LUA_OK) {
                         const char *msg = lua_tostring(TL, -1);
@@ -542,31 +563,39 @@ void spp_rcv_task(void *arg)
                     }
                 }
 
-                memcpy(line_buff + line_buff_last, item_ptr, item_size);
-                int start_search = line_buff_last;
-                line_buff_last += item_size;
-                char *pos = memchr(line_buff + start_search, '\n', line_buff_last - start_search);
+                /* Guard: skip packet if it alone exceeds the buffer */
+                if (item_size <= CONFIG_ROBOTITO_BLE_LINEBUFFER) {
+                    memcpy(line_buff + line_buff_last, item_ptr, item_size);
+                    int start_search = line_buff_last;
+                    line_buff_last += item_size;
+                    char *pos = memchr(line_buff + start_search, '\n', line_buff_last - start_search);
 
-                while (pos) {
-                    lua_State *L = pvGetLuaState();
-                    lua_State *TL = lua_newthread(L);
-                    int tref = luaL_ref(L, LUA_REGISTRYINDEX);
-                    lua_rawgeti(L, LUA_REGISTRYINDEX, robotito_ble_line_callback);
-                    lua_xmove(L, TL, 1);
+                    while (pos) {
+                        xSemaphoreTake(lua_mutex, portMAX_DELAY);
+                        lua_State *L = pvGetLuaState();
+                        lua_State *TL = lua_newthread(L);
+                        int tref = luaL_ref(L, LUA_REGISTRYINDEX);
+                        lua_rawgeti(L, LUA_REGISTRYINDEX, robotito_ble_line_callback);
+                        lua_xmove(L, TL, 1);
 
-                    lua_pushlstring(TL, line_buff, pos - line_buff);
-                    memcpy(line_buff, pos + 1, line_buff + line_buff_last - pos - 1);
-                    int status = lua_pcall(TL, 1, 0, 0);
-                    luaL_unref(TL, LUA_REGISTRYINDEX, tref);
+                        lua_pushlstring(TL, line_buff, pos - line_buff);
+                        memcpy(line_buff, pos + 1, line_buff + line_buff_last - pos - 1);
+                        line_buff_last -= (pos - line_buff + 1);
+                        int status = lua_pcall(TL, 1, 0, 0);
+                        luaL_unref(TL, LUA_REGISTRYINDEX, tref);
+                        xSemaphoreGive(lua_mutex);
 
-                    if (status != LUA_OK) {
-                        const char *msg = lua_tostring(TL, -1);
-                        lua_writestringerror("error in line callback: %s\n", msg);
-                        lua_pop(TL, 1);
+                        if (status != LUA_OK) {
+                            const char *msg = lua_tostring(TL, -1);
+                            lua_writestringerror("error in line callback: %s\n", msg);
+                            lua_pop(TL, 1);
+                        }
+
+                        pos = memchr(line_buff, '\n', line_buff_last);
                     }
-
-                    line_buff_last -= (pos - line_buff + 1);
-                    pos = memchr(line_buff, '\n', line_buff_last);
+                } else {
+                    syslog(LOG_ERR, "spp_rcv_task: packet (%u bytes) exceeds line buffer, dropped\n",
+                           (unsigned)item_size);
                 }
             }
 
@@ -630,7 +659,7 @@ static void spp_task_init(void)
     xTaskCreate(spp_heartbeat_task, "spp_heartbeat_task", 2048, NULL, 10, NULL);
 #endif
     cmd_cmd_queue = xQueueCreate(10, sizeof(uint32_t));
-    xTaskCreate(spp_cmd_task, "spp_cmd_task", 2048, NULL, 10, NULL);
+    xTaskCreate(spp_cmd_task, "spp_cmd_task", 2048, NULL, 10, &spp_cmd_task_handle);
 }
 
 /* ============================================================================
@@ -1275,6 +1304,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                 p_data->connect.remote_bda[0], p_data->connect.remote_bda[1],
                 p_data->connect.remote_bda[2], p_data->connect.remote_bda[3],
                 p_data->connect.remote_bda[4], p_data->connect.remote_bda[5]);
+            xSemaphoreTake(lua_mutex, portMAX_DELAY);
             lua_State *L = pvGetLuaState();
             lua_State *TL = lua_newthread(L);
             int tref = luaL_ref(L, LUA_REGISTRYINDEX);
@@ -1283,6 +1313,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
             lua_pushstring(TL, mac_str);
             lua_pcall(TL, 1, 0, 0);
             luaL_unref(L, LUA_REGISTRYINDEX, tref);
+            xSemaphoreGive(lua_mutex);
         }
 #ifdef SUPPORT_HEARTBEAT
         {
@@ -1308,6 +1339,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
         syslog(LOG_INFO, "Client disconnected, reason: 0x%02x (%s)\n",
             (int)p_data->disconnect.reason, disconnect_reason);
         if (robotito_ble_disconnect_callback != LUA_REFNIL) {
+            xSemaphoreTake(lua_mutex, portMAX_DELAY);
             lua_State *L = pvGetLuaState();
             lua_State *TL = lua_newthread(L);
             int tref = luaL_ref(L, LUA_REGISTRYINDEX);
@@ -1316,6 +1348,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
             lua_pushstring(TL, disconnect_reason);
             lua_pcall(TL, 1, 0, 0);
             luaL_unref(L, LUA_REGISTRYINDEX, tref);
+            xSemaphoreGive(lua_mutex);
         }
         is_connected = false;
         enable_data_ntf = false;
@@ -1612,9 +1645,23 @@ static int robotito_ble_mapper_clear_sequence(lua_State *L) {
  * ============================================================================ */
 
 static int robotito_ble_init(lua_State *L) {
+    if (robotito_ble_permanently_down) {
+        lua_pushnil(L);
+        lua_pushstring(L, "BLE released - reboot required to use again");
+        return 2;
+    }
     if (robotito_ble_initialized) {
         lua_pushboolean(L, true);
         return 1;
+    }
+
+    if (lua_mutex == NULL) {
+        lua_mutex = xSemaphoreCreateMutex();
+        if (lua_mutex == NULL) {
+            lua_pushnil(L);
+            lua_pushstring(L, "failed to create lua mutex");
+            return 2;
+        }
     }
 
     printf("initializing robotito_ble\n");
@@ -1658,7 +1705,10 @@ static int robotito_ble_init(lua_State *L) {
     }
     ESP_ERROR_CHECK(ret);
 
-    ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT));
+    if (!classic_bt_mem_released) {
+        ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT));
+        classic_bt_mem_released = true;
+    }
     ret = esp_bt_controller_init(&bt_cfg);
     if (ret) {
         syslog(LOG_ERR, "%s init controller failed: %s\n", __func__, esp_err_to_name(ret));
@@ -1702,7 +1752,7 @@ static int robotito_ble_init(lua_State *L) {
         lua_pushstring(L, "failed to create ring buffer");
         return 2;
     }
-    xTaskCreate(spp_rcv_task, "spp_rcv_task", CONFIG_ROBOTITO_BLE_STACK_SIZE, NULL, 10, NULL);
+    xTaskCreate(spp_rcv_task, "spp_rcv_task", CONFIG_ROBOTITO_BLE_STACK_SIZE, NULL, 10, &spp_rcv_task_handle);
 
     mapper_evt_buffer_handle = xRingbufferCreate(MAPPER_EVT_BUFFER_SIZE_BYTES, RINGBUF_TYPE_BYTEBUF);
     if (mapper_evt_buffer_handle == NULL) {
@@ -1711,7 +1761,7 @@ static int robotito_ble_init(lua_State *L) {
         lua_pushstring(L, "failed to create mapper ring buffer");
         return 2;
     }
-    xTaskCreate(mapper_evt_task, "mapper_evt_task", CONFIG_ROBOTITO_BLE_STACK_SIZE, NULL, 10, NULL);
+    xTaskCreate(mapper_evt_task, "mapper_evt_task", CONFIG_ROBOTITO_BLE_STACK_SIZE, NULL, 10, &mapper_evt_task_handle);
 
     spp_task_init();
 
@@ -1873,11 +1923,110 @@ static int robotito_ble_mem_info(lua_State *L) {
 }
 
 /* ============================================================================
+ * Lua API: BLE deinit — shuts down the full BLE stack and allows re-init
+ * ============================================================================ */
+
+static int robotito_ble_deinit(lua_State *L) {
+    if (!robotito_ble_initialized) {
+        lua_pushboolean(L, true);
+        return 1;
+    }
+
+    /* 1. Stop advertising and disconnect any active connection */
+    esp_ble_gap_stop_advertising();
+    if (is_connected) {
+        esp_ble_gap_disconnect(spp_remote_bda);
+        vTaskDelay(100 / portTICK_PERIOD_MS);
+    }
+
+    /* 2. Kill FreeRTOS tasks (all are blocked on ring buffers / queues,
+          safe to delete directly since they hold no mutexes at that point) */
+    if (spp_rcv_task_handle)    { vTaskDelete(spp_rcv_task_handle);    spp_rcv_task_handle    = NULL; }
+    if (mapper_evt_task_handle) { vTaskDelete(mapper_evt_task_handle); mapper_evt_task_handle = NULL; }
+    if (spp_cmd_task_handle)    { vTaskDelete(spp_cmd_task_handle);    spp_cmd_task_handle    = NULL; }
+
+    /* 3. Tear down the ESP-IDF BLE stack (order matters) */
+    esp_bluedroid_disable();
+    esp_bluedroid_deinit();
+    esp_bt_controller_disable();
+    esp_bt_controller_deinit();
+
+    /* 4. Free ring buffers and queues */
+    if (stream_buffer_handle)     { vRingbufferDelete(stream_buffer_handle);     stream_buffer_handle     = NULL; }
+    if (mapper_evt_buffer_handle) { vRingbufferDelete(mapper_evt_buffer_handle); mapper_evt_buffer_handle = NULL; }
+    if (cmd_cmd_queue)            { vQueueDelete(cmd_cmd_queue);                 cmd_cmd_queue            = NULL; }
+
+    /* 4b. Free any SppRecvDataBuff nodes pending when tasks were killed */
+    {
+        spp_receive_data_node_t *node = SppRecvDataBuff.first_node;
+        while (node) {
+            spp_receive_data_node_t *next = node->next_node;
+            free(node->node_buff);
+            free(node);
+            node = next;
+        }
+        SppRecvDataBuff.node_num = 0;
+        SppRecvDataBuff.buff_size = 0;
+        SppRecvDataBuff.first_node = NULL;
+        temp_spp_recv_data_node_p1 = NULL;
+        temp_spp_recv_data_node_p2 = NULL;
+    }
+
+    /* 5. Free heap allocations from init */
+    if (spp_adv_data) { free(spp_adv_data); spp_adv_data = NULL; spp_adv_data_size = 0; }
+    if (ble_device_name && ble_device_name != SAMPLE_DEVICE_NAME) {
+        free((char *)ble_device_name);
+    }
+    ble_device_name = NULL;
+
+    /* 5b. Delete FreeRTOS synchronization objects */
+    if (lua_mutex)          { vSemaphoreDelete(lua_mutex);          lua_mutex = NULL; }
+    if (s_mapper_map_mutex) { vSemaphoreDelete(s_mapper_map_mutex); s_mapper_map_mutex = NULL; }
+    if (s_mapper_seq_mutex) { vSemaphoreDelete(s_mapper_seq_mutex); s_mapper_seq_mutex = NULL; }
+
+    /* 6. Reset GATT / connection state */
+    spp_conn_id   = 0xffff;
+    spp_gatts_if  = 0xff;
+    spp_mtu_size  = 23;
+    enable_data_ntf = false;
+    is_connected    = false;
+    spp_profile_tab[SPP_PROFILE_APP_IDX].gatts_if = ESP_GATT_IF_NONE;
+    memset(spp_handle_table, 0, sizeof(spp_handle_table));
+
+    /* 6b. Free line buffer if allocated */
+    if (line_buff != NULL) {
+        free(line_buff);
+        line_buff      = NULL;
+        line_buff_last = 0;
+    }
+
+    /* 7. Release Lua callback refs */
+    robotito_ble_rcv_callback        = LUA_REFNIL;
+    robotito_ble_line_callback       = LUA_REFNIL;
+    robotito_ble_connect_callback    = LUA_REFNIL;
+    robotito_ble_disconnect_callback = LUA_REFNIL;
+    robotito_ble_mapper_cfg_callback = LUA_REFNIL;
+    robotito_ble_mapper_seq_callback = LUA_REFNIL;
+
+    /* 8. Mark as permanently down - reinit not allowed until reboot */
+    robotito_ble_initialized = false;
+    robotito_ble_permanently_down = true;
+
+    /* 9. Run a full Lua GC cycle to reclaim any Lua-side BLE objects */
+    lua_gc(L, LUA_GCCOLLECT, 0);
+
+    printf("[Robot] Bluetooth OFF (deinit complete - reboot required to use again)\n");
+    lua_pushboolean(L, true);
+    return 1;
+}
+
+/* ============================================================================
  * Module registration
  * ============================================================================ */
 
 static const luaL_Reg robotito_ble[] = {
     {"init",                    robotito_ble_init},
+    {"deinit",                  robotito_ble_deinit},
     {"send",                    robotito_ble_send},
     {"set_rcv_callback",        robotito_ble_rcv},
     {"set_line_callback",       robotito_ble_line},
