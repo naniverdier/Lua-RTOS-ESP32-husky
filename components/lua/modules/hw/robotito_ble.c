@@ -71,7 +71,12 @@
 #include "esp_bt_defs.h"
 #include "esp_bt_main.h"
 #include "robotito_ble.h"
-#include "huskylens_mapper.h"
+
+/* Constantes de dimensionado del mapper, antes provistas por huskylens_mapper.h.
+ * Se copian aca porque robotito_ble ya no depende de ese modulo. */
+#define HUSKYLENS_MAP_MAX 50
+#define HUSKYLENS_SEQ_MAX 50
+#define HUSKYLENS_SEQ_MAX_SEQS 10
 
 void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName) {
     printf("*** STACK OVERFLOW en tarea: '%s' ***\n", pcTaskName);
@@ -1101,9 +1106,9 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                 break;
             }
 
-            uint8_t count = huskylens_mapper_get_pairs(&buf[1], 100);
-            buf[0] = count;
-            uint16_t len = 1 + (count * 2);
+            if (!s_mapper_map_loaded) mapper_nvs_load();
+            uint16_t len = mapper_map_pack(buf, 256);
+            uint8_t count = buf[0];
 
             memset(rsp, 0, sizeof(esp_gatt_rsp_t));
             rsp->attr_value.handle = p_data->read.handle;
@@ -1116,8 +1121,8 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
             free(buf);
             free(rsp);
         } else if (res == SPP_IDX_MAPPER_SEQ_READ_VAL) {
-            // Handle mapper sequence read - read directly from s_mapper_seqs
-            // (always in sync with NVS writes, unlike huskylens_mapper)
+            // Handle mapper sequence read - read directly from s_mapper_seqs,
+            // que es la unica fuente de verdad del mapper dentro de este modulo.
             if (!s_mapper_seq_loaded) mapper_nvs_load_seq();
 
             uint8_t *buf = (uint8_t *)malloc(512);
@@ -1203,7 +1208,6 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                         } else {
                             mapper_map_set_from_pairs(&p_data->write.value[1], count);
                             s_mapper_map_loaded = true;
-                            huskylens_mapper_set_pairs(&p_data->write.value[1], count);
 
                             if (mapper_nvs_save() == ESP_OK) {
                                 syslog(LOG_INFO, "Mapper config written: %d pairs\n", count);
@@ -1230,7 +1234,6 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                         } else {
                             mapper_seq_set_from_list(&p_data->write.value[1], seq_count);
                             s_mapper_seq_loaded = true;
-                            huskylens_mapper_set_sequence(&p_data->write.value[1], seq_count);
 
                             if (mapper_nvs_save_seq() == ESP_OK) {
                                 syslog(LOG_INFO, "Mapper single sequence written: %d IDs\n", seq_count);
@@ -2010,7 +2013,7 @@ static int robotito_ble_deinit(lua_State *L) {
 
     /* 8. Mark as permanently down - reinit not allowed until reboot */
     robotito_ble_initialized = false;
-    robotito_ble_permanently_down = true;
+    // robotito_ble_permanently_down = true;
 
     /* 9. Run a full Lua GC cycle to reclaim any Lua-side BLE objects */
     lua_gc(L, LUA_GCCOLLECT, 0);
