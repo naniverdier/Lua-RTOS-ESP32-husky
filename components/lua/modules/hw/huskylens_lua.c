@@ -22,6 +22,7 @@ extern "C"{
 #endif
 
 #include "huskylens.h"
+#include "sys.h"
 
 static bool initialized = false;
 static huskylens_t husky_instance;
@@ -1136,7 +1137,7 @@ static const luaL_Reg huskylens[] = {
     {"is_pro", l_huskylens_is_pro},
     {"check_firmware_version", l_huskylens_check_firmware_version},
     {"write_firmware_version", l_huskylens_write_firmware_version},
-    
+
     {NULL, NULL}
 };
 
@@ -1181,4 +1182,4 @@ MODULE_REGISTER_RAM(HUSKYLENS, huskylens, luaopen_huskylens, 1);
 }
 #endif
 
-#endif 
+#endif
